@@ -1,0 +1,10 @@
+G:\Github\chronos-minimal\target\debug\deps\tray_item-94bf73fb5e66ddb4.d: C:\Users\Ghassan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tray-item-0.10.0\src\lib.rs C:\Users\Ghassan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tray-item-0.10.0\src\api\mod.rs C:\Users\Ghassan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tray-item-0.10.0\src\api\windows\mod.rs C:\Users\Ghassan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tray-item-0.10.0\src\api\windows\funcs.rs C:\Users\Ghassan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tray-item-0.10.0\src\api\windows\structs.rs C:\Users\Ghassan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tray-item-0.10.0\src\error.rs
+
+G:\Github\chronos-minimal\target\debug\deps\libtray_item-94bf73fb5e66ddb4.rmeta: C:\Users\Ghassan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tray-item-0.10.0\src\lib.rs C:\Users\Ghassan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tray-item-0.10.0\src\api\mod.rs C:\Users\Ghassan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tray-item-0.10.0\src\api\windows\mod.rs C:\Users\Ghassan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tray-item-0.10.0\src\api\windows\funcs.rs C:\Users\Ghassan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tray-item-0.10.0\src\api\windows\structs.rs C:\Users\Ghassan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tray-item-0.10.0\src\error.rs
+
+C:\Users\Ghassan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tray-item-0.10.0\src\lib.rs:
+C:\Users\Ghassan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tray-item-0.10.0\src\api\mod.rs:
+C:\Users\Ghassan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tray-item-0.10.0\src\api\windows\mod.rs:
+C:\Users\Ghassan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tray-item-0.10.0\src\api\windows\funcs.rs:
+C:\Users\Ghassan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tray-item-0.10.0\src\api\windows\structs.rs:
+C:\Users\Ghassan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tray-item-0.10.0\src\error.rs:

@@ -1,0 +1,1 @@
+G:\Github\chronos-minimal\target\debug\chronos-screentime.exe: G:\Github\chronos-minimal\build.rs G:\Github\chronos-minimal\src\category.rs G:\Github\chronos-minimal\src\main.rs G:\Github\chronos-minimal\src\models.rs G:\Github\chronos-minimal\src\storage.rs G:\Github\chronos-minimal\src\supabase.rs G:\Github\chronos-minimal\src\tracker.rs G:\Github\chronos-minimal\src\ui.rs
