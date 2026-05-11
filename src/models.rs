@@ -20,6 +20,10 @@ pub struct AppSettings {
     pub supabase_upload_interval_minutes: u32,
     #[serde(default = "default_idle_threshold_seconds")]
     pub idle_threshold_seconds: u32,
+    #[serde(default)]
+    pub start_with_windows: bool,
+    #[serde(default)]
+    pub start_minimized_to_tray: bool,
 }
 
 fn default_upload_interval() -> u32 {
@@ -39,6 +43,8 @@ impl Default for AppSettings {
             supabase_user_id: String::new(),
             supabase_upload_interval_minutes: 30,
             idle_threshold_seconds: 120,
+            start_with_windows: false,
+            start_minimized_to_tray: false,
         }
     }
 }
@@ -170,7 +176,7 @@ pub struct TodayAppLine {
 /// Get today's total seconds and per-app/per-website lines (excluding AppLock). Sorted by time desc.
 pub fn get_today_summary(data: &ScreenTimeData) -> (u64, Vec<TodayAppLine>) {
     use chrono::Datelike;
-    let today = chrono::Utc::now().date_naive();
+    let today = chrono::Local::now().date_naive();
     let dk = date_key(today);
     let year = today.year().to_string();
     let month = today.month().to_string();
@@ -292,7 +298,7 @@ pub fn summarize_period(
     period: SummaryPeriod,
     websites_only: bool,
 ) -> (SummaryTotals, Vec<SummaryLine>) {
-    let now = chrono::Utc::now().date_naive();
+    let now = chrono::Local::now().date_naive();
     let mut totals = SummaryTotals::default();
     let mut app_names = HashSet::<String>::new();
     let mut rollup = HashMap::<(bool, String), (u64, u64)>::new();

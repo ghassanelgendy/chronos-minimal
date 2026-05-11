@@ -6,11 +6,13 @@ use crate::models::{CurrentActivity, date_key, week_key};
 use crate::models::{AppDailyData, DayData, ScreenTimeData, WebsiteDailyData};
 use crate::models::AppSettings;
 use crate::category::{get_category_for_app, get_category_for_website};
-use chrono::{Datelike, NaiveDate, Utc};
+use chrono::{Datelike, Local, NaiveDate, Utc};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use windows::core::VARIANT;
+use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED};
 
 /// Poll interval (seconds). Align with spec: 1–5 s.
 const POLL_INTERVAL_SECS: u64 = 1;
@@ -110,19 +112,69 @@ fn find_child_by_class(
 #[cfg(windows)]
 fn get_browser_url(hwnd: windows::Win32::Foundation::HWND) -> Option<String> {
     use windows::Win32::UI::WindowsAndMessaging::GetWindowTextW;
-    let omnibox = find_child_by_class(hwnd, "Chrome_OmniboxView")?;
-    let mut buf = [0u16; 2048];
-    let len = unsafe { GetWindowTextW(omnibox, &mut buf) } as usize;
-    if len == 0 {
-        return None;
+    for class in ["Chrome_OmniboxView", "Chrome_AutocompleteEditView"] {
+        if let Some(omnibox) = find_child_by_class(hwnd, class) {
+            let mut buf = [0u16; 2048];
+            let len = unsafe { GetWindowTextW(omnibox, &mut buf) } as usize;
+            if len > 0 {
+                let raw = String::from_utf16_lossy(&buf[..len]);
+                let raw = raw.trim();
+                if !raw.is_empty() {
+                    if let Some(domain) = normalize_domain(raw)
+                        .or_else(|| normalize_domain(&format!("https://{}", raw)))
+                    {
+                        return Some(domain);
+                    }
+                }
+            }
+        }
     }
-    let raw = String::from_utf16_lossy(&buf[..len]);
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return None;
+
+    // UIAutomation fallback for browsers where the omnibox is not a window control.
+    get_browser_url_via_uia(hwnd)
+}
+
+/// Use UI Automation to read the browser's address bar value (Chrome/Edge/Firefox).
+#[cfg(windows)]
+fn get_browser_url_via_uia(hwnd: windows::Win32::Foundation::HWND) -> Option<String> {
+    use windows::Win32::UI::Accessibility::*;
+    unsafe {
+        let coinit = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let automation: IUIAutomation = CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok()?;
+        let root = automation.ElementFromHandle(hwnd).ok()?;
+        let value: VARIANT = (UIA_EditControlTypeId.0 as i32).into();
+        let cond = automation
+            .CreatePropertyCondition(UIA_ControlTypePropertyId, &value)
+            .ok()?;
+        let edits = root.FindAll(TreeScope_Subtree, &cond).ok()?;
+        let length = edits.Length().unwrap_or(0);
+        for i in 0..length {
+            if let Ok(el) = edits.GetElement(i) {
+                let name = el.CurrentName().unwrap_or_default().to_string().to_lowercase();
+                let looks_like_address = name.contains("address") || name.contains("search") || name.contains("omnibox");
+                if let Ok(vp) = el.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId) {
+                    if let Ok(val_bstr) = vp.CurrentValue() {
+                        let val = val_bstr.to_string();
+                        if let Some(d) = normalize_domain(val.as_str())
+                            .or_else(|| normalize_domain(&format!("https://{}", val)))
+                        {
+                            if coinit.is_ok() {
+                                CoUninitialize();
+                            }
+                            return Some(d);
+                        }
+                    }
+                }
+                if looks_like_address {
+                    continue;
+                }
+            }
+        }
+        if coinit.is_ok() {
+            CoUninitialize();
+        }
+        None
     }
-    // Omnibox may contain a full URL or a bare domain; normalise either way.
-    normalize_domain(raw).or_else(|| normalize_domain(&format!("https://{}", raw)))
 }
 
 /// Extract domain from window title (e.g. "GitHub - Chrome" -> github.com).
@@ -288,8 +340,9 @@ fn increment_session_count(
     data: &mut ScreenTimeData,
     activity: &CurrentActivity,
     now: chrono::DateTime<Utc>,
+    local_date: NaiveDate,
 ) {
-    let day = ensure_day(data, now.date_naive());
+    let day = ensure_day(data, local_date);
     let iso = now.to_rfc3339();
 
     if let Some(domain) = &activity.domain {
@@ -318,12 +371,12 @@ pub fn record_activity(
     data: &mut ScreenTimeData,
     activity: &CurrentActivity,
     now: chrono::DateTime<Utc>,
+    local_date: NaiveDate,
 ) {
     if activity.app_name.is_empty() || activity.is_app_lock() {
         return;
     }
-    let date = now.date_naive();
-    let day = ensure_day(data, date);
+    let day = ensure_day(data, local_date);
     let iso = now.to_rfc3339();
 
     if let Some(ref domain) = activity.domain {
@@ -403,19 +456,20 @@ pub fn run_tracker_loop(
 
         if let Some(activity) = get_foreground_info() {
             let now = Utc::now();
+            let local_date = Local::now().date_naive();
             let current_key = activity_switch_key(&activity);
             {
                 let mut guard = data.lock().unwrap();
-                record_activity(&mut guard, &activity, now);
+                record_activity(&mut guard, &activity, now, local_date);
                 if let Some(ref key) = current_key {
                     if let Some(ref prev_key) = last_switch_key {
                         if prev_key != key {
-                            increment_session_count(&mut guard, &activity, now);
-                            increment_switch_count(&mut guard, now.date_naive());
+                            increment_session_count(&mut guard, &activity, now, local_date);
+                            increment_switch_count(&mut guard, local_date);
                         }
                     } else {
                         // First active item seen after app start/pause counts as session start.
-                        increment_session_count(&mut guard, &activity, now);
+                        increment_session_count(&mut guard, &activity, now, local_date);
                     }
                 }
             }

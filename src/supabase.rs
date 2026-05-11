@@ -84,31 +84,13 @@ fn build_payload(data: &ScreenTimeData, user_id: &str, device_id: &str) -> serde
     use serde_json::json;
     let mut snapshots = Vec::new();
     let mut daily_summaries = Vec::new();
-    let mut years_map = serde_json::Map::new();
 
-    fn format_duration_seconds(seconds: u64) -> String {
-        let hours = seconds / 3600;
-        let minutes = (seconds % 3600) / 60;
-        let secs = seconds % 60;
-        format!("{:02}:{:02}:{:02}.0000000", hours, minutes, secs)
-    }
-
-    fn time_of_day_from_iso(iso: &str) -> String {
-        chrono::DateTime::parse_from_rfc3339(iso)
-            .map(|dt| dt.format("%H:%M:%S").to_string())
-            .unwrap_or_default()
-    }
-
-    for (year_key, year) in &data.years {
-        let mut months_map = serde_json::Map::new();
-        for (month_key, month) in &year.months {
-            let mut weeks_map = serde_json::Map::new();
-            for (week_key, week) in &month.weeks {
-                let mut days_map = serde_json::Map::new();
-                for (day_key, day) in &week.days {
+    for (_, year) in &data.years {
+        for (_, month) in &year.months {
+            for (_, week) in &month.weeks {
+                for (_, day) in &week.days {
                     let mut apps = Vec::new();
                     let mut total_apps_no_lock: u32 = 0;
-                    let mut apps_obj = serde_json::Map::new();
                     for (_, app) in &day.apps {
                         if app.app_name.eq_ignore_ascii_case(APP_LOCK_NAME) {
                             continue;
@@ -129,26 +111,8 @@ fn build_payload(data: &ScreenTimeData, user_id: &str, device_id: &str) -> serde
                             "last_seen_at": app.last_seen,
                             "last_active_at": app.last_active_time,
                         }));
-
-                        apps_obj.insert(
-                            app.app_name.clone(),
-                            json!({
-                                "AppName": app.app_name,
-                                "Category": category,
-                                "ProcessPath": app.process_path,
-                                "TotalTime": format_duration_seconds(app.total_time_seconds),
-                                "SessionCount": app.session_count,
-                                "FirstSeen": app.first_seen,
-                                "LastSeen": app.last_seen,
-                                "LastActiveTime": app.last_active_time,
-                                "FirstSeenTime": time_of_day_from_iso(&app.first_seen),
-                                "LastSeenTime": time_of_day_from_iso(&app.last_seen),
-                                "LastActiveTimeOfDay": time_of_day_from_iso(&app.last_active_time),
-                            }),
-                        );
                     }
                     let mut websites = Vec::new();
-                    let mut websites_obj = serde_json::Map::new();
                     for (_, site) in &day.websites {
                         let category = if site.category.is_empty() {
                             get_category_for_website(&site.domain)
@@ -165,23 +129,6 @@ fn build_payload(data: &ScreenTimeData, user_id: &str, device_id: &str) -> serde
                             "last_seen_at": site.last_seen,
                             "last_active_at": site.last_active_time,
                         }));
-
-                        websites_obj.insert(
-                            site.domain.clone(),
-                            json!({
-                                "Domain": site.domain,
-                                "Category": category,
-                                "TotalTime": format_duration_seconds(site.total_time_seconds),
-                                "SessionCount": site.session_count,
-                                "FirstSeen": site.first_seen,
-                                "LastSeen": site.last_seen,
-                                "LastActiveTime": site.last_active_time,
-                                "FirstSeenTime": time_of_day_from_iso(&site.first_seen),
-                                "LastSeenTime": time_of_day_from_iso(&site.last_seen),
-                                "LastActiveTimeOfDay": time_of_day_from_iso(&site.last_active_time),
-                                "FaviconUrl": site.favicon_url,
-                            }),
-                        );
                     }
                     let total_switches = if day.total_switches > 0 {
                         day.total_switches
@@ -205,32 +152,9 @@ fn build_payload(data: &ScreenTimeData, user_id: &str, device_id: &str) -> serde
                             "total_switches": total_switches,
                             "total_apps": total_apps_no_lock,
                         }));
-
-                        days_map.insert(
-                            day_key.clone(),
-                            json!({
-                                "Date": day.date,
-                                "Apps": apps_obj,
-                                "Websites": websites_obj,
-                                "TotalSwitches": total_switches,
-                                "TotalApps": total_apps_no_lock,
-                            }),
-                        );
                     }
                 }
-
-                if !days_map.is_empty() {
-                    weeks_map.insert(week_key.clone(), json!({ "Days": days_map }));
-                }
             }
-
-            if !weeks_map.is_empty() {
-                months_map.insert(month_key.clone(), json!({ "Weeks": weeks_map }));
-            }
-        }
-
-        if !months_map.is_empty() {
-            years_map.insert(year_key.clone(), json!({ "Months": months_map }));
         }
     }
 
@@ -240,7 +164,6 @@ fn build_payload(data: &ScreenTimeData, user_id: &str, device_id: &str) -> serde
         "platform": PLATFORM,
         "source": SOURCE,
         "is_cumulative": true,
-        "data": { "Years": years_map },
         "daily_summaries": daily_summaries,
         "snapshots": snapshots,
     })

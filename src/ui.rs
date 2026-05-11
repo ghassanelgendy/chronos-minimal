@@ -16,6 +16,7 @@ use crate::storage::{
     reset_app_data,
     save_settings,
 };
+use crate::startup;
 use crate::supabase;
 use crate::models::ScreenTimeData;
 use native_windows_gui as nwg;
@@ -208,6 +209,7 @@ pub fn show_dashboard_window(
     settings: Arc<std::sync::Mutex<AppSettings>>,
     tracking_enabled: Arc<AtomicBool>,
     running: Arc<AtomicBool>,
+    tray_restore_flag: Arc<AtomicBool>,
 ) {
     nwg::Font::set_global_family("Segoe UI").ok();
 
@@ -227,6 +229,7 @@ pub fn show_dashboard_window(
     let mut idle_input = nwg::TextInput::default();
     let mut idle_apply_btn = nwg::Button::default();
     let mut minimize_tray_btn = nwg::Button::default();
+    let mut restore_tray_btn = nwg::Button::default();
     let mut reset_app_input = nwg::TextInput::default();
     let mut reset_app_btn = nwg::Button::default();
     let mut export_btn = nwg::Button::default();
@@ -348,6 +351,12 @@ pub fn show_dashboard_window(
         .build(&mut minimize_tray_btn)
         .expect("dashboard minimize btn");
 
+    nwg::Button::builder()
+        .text("Restore Tray Icon")
+        .parent(&window)
+        .build(&mut restore_tray_btn)
+        .expect("dashboard restore tray btn");
+
     nwg::TextInput::builder()
         .text("App name to reset")
         .parent(&window)
@@ -400,6 +409,7 @@ pub fn show_dashboard_window(
         .child_item(nwg::GridLayoutItem::new(&minimize_tray_btn, 3, 6, 1, 1))
         .child_item(nwg::GridLayoutItem::new(&reset_app_input, 0, 7, 3, 1))
         .child_item(nwg::GridLayoutItem::new(&reset_app_btn, 3, 7, 1, 1))
+        .child_item(nwg::GridLayoutItem::new(&restore_tray_btn, 3, 8, 1, 1))
         .build(&mut layout)
         .expect("dashboard layout");
 
@@ -436,6 +446,7 @@ pub fn show_dashboard_window(
     let reset_all_btn_handle = reset_all_btn.handle.clone();
     let idle_apply_btn_handle = idle_apply_btn.handle.clone();
     let minimize_tray_btn_handle = minimize_tray_btn.handle.clone();
+    let restore_tray_btn_handle = restore_tray_btn.handle.clone();
     let reset_app_btn_handle = reset_app_btn.handle.clone();
     let export_btn_handle = export_btn.handle.clone();
     let exit_btn_handle = exit_btn.handle.clone();
@@ -571,6 +582,11 @@ pub fn show_dashboard_window(
             return;
         }
 
+        if handle == restore_tray_btn_handle {
+            tray_restore_flag.store(true, Ordering::SeqCst);
+            return;
+        }
+
         if handle == reset_app_btn_handle {
             let app = reset_app_input.text();
             if app.trim().is_empty() || app == "App name to reset" {
@@ -629,6 +645,8 @@ pub fn show_settings_window(
     let mut user_id = nwg::TextInput::default();
     let mut interval = nwg::TextInput::default();
     let mut idle_threshold = nwg::TextInput::default();
+    let mut start_with_windows = nwg::CheckBox::default();
+    let mut start_minimized = nwg::CheckBox::default();
     let mut test_btn = nwg::Button::default();
     let mut save_btn = nwg::Button::default();
     let mut key_visible_btn = nwg::Button::default();
@@ -641,7 +659,7 @@ pub fn show_settings_window(
     let key_visible = Rc::new(RefCell::new(false));
 
     nwg::Window::builder()
-        .size((460, 430))
+        .size((480, 520))
         .position((300, 200))
         .title("Chronos Screentime – Cloud Sync (Supabase)")
         .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE)
@@ -700,6 +718,16 @@ pub fn show_settings_window(
         .parent(&window)
         .build(&mut lbl_idle)
         .expect("label idle");
+    nwg::CheckBox::builder()
+        .text("Start with Windows (Run at logon)")
+        .parent(&window)
+        .build(&mut start_with_windows)
+        .expect("start with windows checkbox");
+    nwg::CheckBox::builder()
+        .text("Start minimized to tray")
+        .parent(&window)
+        .build(&mut start_minimized)
+        .expect("start minimized checkbox");
     nwg::TextInput::builder()
         .parent(&window)
         .build(&mut idle_threshold)
@@ -723,6 +751,8 @@ pub fn show_settings_window(
         user_id.set_text(&s.supabase_user_id);
         interval.set_text(&s.supabase_upload_interval_minutes.to_string());
         idle_threshold.set_text(&s.idle_threshold_seconds_clamped().to_string());
+        start_with_windows.set_check_state(if s.start_with_windows { nwg::CheckBoxState::Checked } else { nwg::CheckBoxState::Unchecked });
+        start_minimized.set_check_state(if s.start_minimized_to_tray { nwg::CheckBoxState::Checked } else { nwg::CheckBoxState::Unchecked });
     }
 
     nwg::GridLayout::builder()
@@ -740,8 +770,10 @@ pub fn show_settings_window(
         .child_item(nwg::GridLayoutItem::new(&interval, 1, 4, 2, 1))
         .child_item(nwg::GridLayoutItem::new(&lbl_idle, 0, 5, 1, 1))
         .child_item(nwg::GridLayoutItem::new(&idle_threshold, 1, 5, 2, 1))
-        .child_item(nwg::GridLayoutItem::new(&test_btn, 1, 6, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&save_btn, 2, 6, 1, 1))
+        .child_item(nwg::GridLayoutItem::new(&start_with_windows, 0, 6, 2, 1))
+        .child_item(nwg::GridLayoutItem::new(&start_minimized, 0, 7, 2, 1))
+        .child_item(nwg::GridLayoutItem::new(&test_btn, 1, 8, 1, 1))
+        .child_item(nwg::GridLayoutItem::new(&save_btn, 2, 8, 1, 1))
         .build(&mut layout)
         .expect("layout");
 
@@ -769,12 +801,17 @@ pub fn show_settings_window(
                 supabase_user_id: user_id.text(),
                 supabase_upload_interval_minutes: interval.text().parse().unwrap_or(30),
                 idle_threshold_seconds: idle_threshold.text().parse().unwrap_or(120),
+                start_with_windows: start_with_windows.check_state() == nwg::CheckBoxState::Checked,
+                start_minimized_to_tray: start_minimized.check_state() == nwg::CheckBoxState::Checked,
             };
             {
                 let mut guard = settings_save.lock().unwrap();
                 *guard = s.clone();
             }
             save_settings(&s);
+            if let Err(e) = startup::set_run_at_startup(s.start_with_windows) {
+                eprintln!("[chronos] set startup failed: {}", e);
+            }
             nwg::modal_info_message(&nwg::Window::default(), "Saved", "Settings saved.");
             return;
         }
@@ -786,6 +823,8 @@ pub fn show_settings_window(
                 supabase_user_id: user_id.text(),
                 supabase_upload_interval_minutes: interval.text().parse().unwrap_or(30),
                 idle_threshold_seconds: idle_threshold.text().parse().unwrap_or(120),
+                start_with_windows: start_with_windows.check_state() == nwg::CheckBoxState::Checked,
+                start_minimized_to_tray: start_minimized.check_state() == nwg::CheckBoxState::Checked,
             };
             if s.supabase_url.is_empty() || s.supabase_anon_key.is_empty() || s.supabase_user_id.is_empty() {
                 nwg::modal_info_message(&nwg::Window::default(), "Error", "Please set URL, Anon Key, and User ID.");
