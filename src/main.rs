@@ -22,6 +22,8 @@ use windows::Win32::Foundation::HINSTANCE;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{LoadImageW, LR_DEFAULTSIZE, LR_LOADFROMFILE, IMAGE_ICON};
 
+pub static STARTUP_TIME: std::sync::OnceLock<chrono::DateTime<chrono::Local>> = std::sync::OnceLock::new();
+
 type TrayHICON = isize;
 
 /// Resolve path to icon.ico (next to exe or in current dir).
@@ -90,16 +92,16 @@ fn load_tray_icon_handle() -> Option<TrayHICON> {
 
 fn build_tray(
     data: Arc<std::sync::Mutex<ScreenTimeData>>,
-    settings: Arc<std::sync::Mutex<AppSettings>>,
+    _settings: Arc<std::sync::Mutex<AppSettings>>,
     show_flag: Arc<AtomicBool>,
+    select_tab_index: Arc<std::sync::atomic::AtomicUsize>,
     tracker_running: Arc<AtomicBool>,
     tray_icon_handle: Option<TrayHICON>,
 ) -> Option<tray_item::TrayItem> {
     // clones for menu callbacks
     let data_today = Arc::clone(&data);
-    let data_tray = Arc::clone(&data);
-    let settings_tray = Arc::clone(&settings);
     let show_flag_tray = Arc::clone(&show_flag);
+    let select_tab_index_tray = Arc::clone(&select_tab_index);
 
     let tray = if let Some(h) = tray_icon_handle {
         tray_item::TrayItem::new("Chronos Screentime", tray_item::IconSource::RawIcon(h))
@@ -111,17 +113,20 @@ fn build_tray(
 
     match tray {
         Ok(mut t) => {
+            let show_flag_dashboard = Arc::clone(&show_flag_tray);
+            let select_tab_index_dashboard = Arc::clone(&select_tab_index_tray);
             let _ = t.add_menu_item("Show Dashboard", move || {
-                show_flag_tray.store(true, Ordering::SeqCst);
+                select_tab_index_dashboard.store(0, Ordering::SeqCst);
+                show_flag_dashboard.store(true, Ordering::SeqCst);
             });
             let _ = t.add_menu_item("Today's summary", move || {
                 crate::ui::show_today_window(Arc::clone(&data_today));
             });
+            let show_flag_prefs = Arc::clone(&show_flag_tray);
+            let select_tab_index_prefs = Arc::clone(&select_tab_index_tray);
             let _ = t.add_menu_item("Preferences (Supabase sync)", move || {
-                crate::ui::open_settings_window_async(
-                    Arc::clone(&data_tray),
-                    Arc::clone(&settings_tray),
-                );
+                select_tab_index_prefs.store(1, Ordering::SeqCst);
+                show_flag_prefs.store(true, Ordering::SeqCst);
             });
             let running_tray_exit = tracker_running.clone();
             let _ = t.add_menu_item("Exit", move || {
@@ -136,8 +141,28 @@ fn build_tray(
         }
     }
 }
-
 fn main() {
+    STARTUP_TIME.set(chrono::Local::now()).ok();
+    let args: Vec<String> = std::env::args().collect();
+    if args.contains(&"--test-sync".to_string()) {
+        println!("Running sync test...");
+        let settings = load_settings();
+        let data = load_screen_time_data();
+        let device_id = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "PC".to_string());
+        println!("Settings: URL={}, Key_len={}, User={}", settings.supabase_url, settings.supabase_anon_key.len(), settings.supabase_user_id);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(crate::supabase::upload_screentime_data(
+            &data,
+            &settings.supabase_url,
+            &settings.supabase_anon_key,
+            &settings.supabase_user_id,
+            &device_id,
+            0,
+        ));
+        println!("Result: success={}, error={:?}, apps={}, webs={}", result.success, result.error_message, result.apps_inserted, result.websites_inserted);
+        return;
+    }
+
     if let Err(e) = native_windows_gui::init() {
         // No GUI - show Win32 message box so user sees something
         show_error_messagebox(&format!("Chronos failed to start: {}", e));
@@ -218,6 +243,7 @@ fn main() {
 
     // Flag set by tray "Show Dashboard" → main loop reopens the window.
     let show_dashboard_flag = Arc::new(AtomicBool::new(false));
+    let select_tab_index = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let tray_restore_flag = Arc::new(AtomicBool::new(true)); // true so tray initializes on boot
     let tray_icon_handle = load_tray_icon_handle();
     let tray_holder: Arc<std::sync::Mutex<Option<tray_item::TrayItem>>> =
@@ -228,6 +254,7 @@ fn main() {
         let data_tray = Arc::clone(&data);
         let settings_tray = Arc::clone(&settings);
         let show_flag_tray = Arc::clone(&show_dashboard_flag);
+        let select_tab_index_tray = Arc::clone(&select_tab_index);
         let running_tray = Arc::clone(&tracker_running);
         let restore_flag = Arc::clone(&tray_restore_flag);
         let tray_store = Arc::clone(&tray_holder);
@@ -241,6 +268,7 @@ fn main() {
                         Arc::clone(&data_tray),
                         Arc::clone(&settings_tray),
                         Arc::clone(&show_flag_tray),
+                        Arc::clone(&select_tab_index_tray),
                         Arc::clone(&running_tray),
                         tray_icon_handle,
                     );
@@ -256,6 +284,7 @@ fn main() {
                 Arc::clone(&data),
                 Arc::clone(&settings),
                 Arc::clone(&show_dashboard_flag),
+                Arc::clone(&select_tab_index),
                 Arc::clone(&tracker_running),
                 tray_icon_handle,
             );
@@ -278,12 +307,14 @@ fn main() {
         first_cycle = false;
 
         if !skip_window {
+            let tab_to_select = select_tab_index.swap(0, Ordering::SeqCst);
             crate::ui::show_dashboard_window(
                 data.clone(),
                 settings.clone(),
                 tracking_enabled.clone(),
                 tracker_running.clone(),
                 Arc::clone(&tray_restore_flag),
+                Some(tab_to_select),
             );
         }
         // Dashboard closed – spin until tray asks to reopen, or Exit is triggered.
