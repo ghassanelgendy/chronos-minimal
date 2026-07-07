@@ -1,12 +1,21 @@
 # Chronos Screentime
 
+[![GitHub Release](https://img.shields.io/github/v/release/ghassanelgendy/chronos-minimal?style=flat-square&color=0066cc)](https://github.com/ghassanelgendy/chronos-minimal/releases)
+[![Downloads](https://img.shields.io/github/downloads/ghassanelgendy/chronos-minimal/total?style=flat-square&color=2ea44f)](https://github.com/ghassanelgendy/chronos-minimal/releases)
+[![Rust Version](https://img.shields.io/badge/rust-1.75%2B-e3592c?style=flat-square)](https://www.rust-lang.org)
+[![Platform](https://img.shields.io/badge/platform-windows-lightgray?style=flat-square)](#)
+
 Chronos Screentime is a lightweight, background-running Windows screentime tracking application. This version is a performance-boosted port of the original [chronos](https://github.com/ghassanelgendy/chronos-screentime) rewritten in Rust for minimal resource consumption and system footprint.
 
 The application sits quietly in your system tray, records your active application usage, extracts browser domains from window titles, and syncs this data to a Supabase backend database securely and efficiently.
 
-## Downloads
+***
 
-You can download the compiled production executable directly from the [Releases](https://github.com/ghassanelgendy/chronos-minimal/releases) page. No installation is required; simply run the executable to start tracking.
+### [**Download Latest Windows Executable**](https://github.com/ghassanelgendy/chronos-minimal/releases/latest)
+
+*Simply download and run `chronos-screentime.exe` from the latest release to start tracking immediately. No installer required.*
+
+***
 
 ## Core Features
 
