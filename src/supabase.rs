@@ -252,22 +252,19 @@ pub async fn upload_screentime_data(
     let mut cache = load_cache();
     let now = Utc::now();
     let last_utc = chrono::DateTime::parse_from_rfc3339(&cache.last_upload_time_utc).ok();
-    let interval_mins = if upload_interval_minutes == 0 {
-        30
-    } else {
-        upload_interval_minutes
-    };
-    if let Some(last) = last_utc {
-        let next_allowed = last + chrono::Duration::minutes(interval_mins as i64);
-        if now < next_allowed {
-            return UploadResult {
-                success: true,
-                error_message: None,
-                apps_inserted: 0,
-                websites_inserted: 0,
-                total_apps: 0,
-                total_websites: 0,
-            };
+    if upload_interval_minutes > 0 {
+        if let Some(last) = last_utc {
+            let next_allowed = last + chrono::Duration::minutes(upload_interval_minutes as i64);
+            if now < next_allowed {
+                return UploadResult {
+                    success: true,
+                    error_message: None,
+                    apps_inserted: 0,
+                    websites_inserted: 0,
+                    total_apps: 0,
+                    total_websites: 0,
+                };
+            }
         }
     }
 
@@ -417,6 +414,21 @@ fn build_upload_url(supabase_url: &str) -> String {
         base.to_string()
     } else {
         format!("{}/functions/v1/upload-screentime", base)
+    }
+}
+
+pub fn get_last_upload_time() -> String {
+    let cache = load_cache();
+    if cache.last_upload_time_utc.is_empty() {
+        "Never uploaded".to_string()
+    } else {
+        match chrono::DateTime::parse_from_rfc3339(&cache.last_upload_time_utc) {
+            Ok(dt) => {
+                let local_dt: chrono::DateTime<chrono::Local> = chrono::DateTime::from(dt);
+                local_dt.format("%Y-%m-%d %H:%M:%S").to_string()
+            }
+            Err(_) => cache.last_upload_time_utc.clone(),
+        }
     }
 }
 
