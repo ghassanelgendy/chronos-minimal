@@ -1,6 +1,6 @@
 # Chronos Screentime
 
-[![GitHub Release](https://img.shields.io/github/v/release/ghassanelgendy/chronos-minimal?style=flat-square&color=0066cc)](https://github.com/ghassanelgendy/chronos-minimal/releases)
+[![GitHub Release](https://img.shields.io/github/v/tag/ghassanelgendy/chronos-minimal?style=flat-square&color=0066cc&label=release)](https://github.com/ghassanelgendy/chronos-minimal/releases)
 [![Downloads](https://img.shields.io/github/downloads/ghassanelgendy/chronos-minimal/total?style=flat-square&color=2ea44f)](https://github.com/ghassanelgendy/chronos-minimal/releases)
 [![Rust Version](https://img.shields.io/badge/rust-1.75%2B-e3592c?style=flat-square)](https://www.rust-lang.org)
 [![Platform](https://img.shields.io/badge/platform-windows-lightgray?style=flat-square)](#)
