@@ -210,11 +210,20 @@ pub fn show_dashboard_window(
     tracking_enabled: Arc<AtomicBool>,
     running: Arc<AtomicBool>,
     tray_restore_flag: Arc<AtomicBool>,
+    default_tab: Option<usize>,
 ) {
     nwg::Font::set_global_family("Segoe UI").ok();
 
     let mut window = nwg::Window::default();
     let mut icon = nwg::Icon::default();
+
+    // Tab Container & Tabs
+    let mut tabs = nwg::TabsContainer::default();
+    let mut tab_activity = nwg::Tab::default();
+    let mut tab_supabase = nwg::Tab::default();
+    let mut tab_prefs = nwg::Tab::default();
+
+    // Controls for Tab 1: Activity
     let mut header = nwg::Label::default();
     let mut total_label = nwg::Label::default();
     let mut tracking_label = nwg::Label::default();
@@ -222,10 +231,30 @@ pub fn show_dashboard_window(
     let mut period_btn = nwg::Button::default();
     let mut web_toggle_btn = nwg::Button::default();
     let mut tracking_btn = nwg::Button::default();
-    let mut open_settings_btn = nwg::Button::default();
     let mut today_btn = nwg::Button::default();
-    let mut reset_all_btn = nwg::Button::default();
-    let mut idle_label = nwg::Label::default();
+    let mut layout_activity = nwg::GridLayout::default();
+
+    // Controls for Tab 2: Cloud Sync (Supabase)
+    let mut enable_sync = nwg::CheckBox::default();
+    let mut lbl_url = nwg::Label::default();
+    let mut url = nwg::TextInput::default();
+    let mut lbl_key = nwg::Label::default();
+    let mut anon_key = nwg::TextInput::default();
+    let mut lbl_uid = nwg::Label::default();
+    let mut user_id = nwg::TextInput::default();
+    let mut lbl_interval = nwg::Label::default();
+    let mut interval = nwg::TextInput::default();
+    let mut lifeos_link_btn = nwg::Button::default();
+    let mut test_btn = nwg::Button::default();
+    let mut save_btn = nwg::Button::default();
+    let mut logon_time_lbl = nwg::Label::default();
+    let mut last_upload_lbl = nwg::Label::default();
+    let mut layout_supabase = nwg::GridLayout::default();
+
+    // Controls for Tab 3: Preferences & Tools
+    let mut start_with_windows = nwg::CheckBox::default();
+    let mut start_minimized = nwg::CheckBox::default();
+    let mut lbl_idle = nwg::Label::default();
     let mut idle_input = nwg::TextInput::default();
     let mut idle_apply_btn = nwg::Button::default();
     let mut minimize_tray_btn = nwg::Button::default();
@@ -233,9 +262,13 @@ pub fn show_dashboard_window(
     let mut reset_app_input = nwg::TextInput::default();
     let mut reset_app_btn = nwg::Button::default();
     let mut export_btn = nwg::Button::default();
+    let mut reset_all_btn = nwg::Button::default();
     let mut exit_btn = nwg::Button::default();
+    let mut layout_prefs = nwg::GridLayout::default();
+
+    // Timer & main layout
     let mut timer = nwg::AnimationTimer::default();
-    let mut layout = nwg::GridLayout::default();
+    let mut main_layout = nwg::GridLayout::default();
 
     let current_period = Rc::new(RefCell::new(SummaryPeriod::Today));
     let websites_only = Rc::new(RefCell::new(false));
@@ -250,7 +283,7 @@ pub fn show_dashboard_window(
             .is_ok();
 
     let mut win_builder = nwg::Window::builder()
-        .size((760, 670))
+        .size((780, 680))
         .position((280, 160))
         .title("Chronos Dashboard");
     if icon_loaded {
@@ -261,26 +294,75 @@ pub fn show_dashboard_window(
         .build(&mut window)
         .expect("Build dashboard window");
 
-    nwg::Label::builder()
-        .text("Realtime Screentime Dashboard")
+    // Build Tabs
+    nwg::TabsContainer::builder()
         .parent(&window)
+        .build(&mut tabs)
+        .expect("tabs container");
+
+    nwg::Tab::builder()
+        .parent(&tabs)
+        .text("Activity Dashboard")
+        .build(&mut tab_activity)
+        .expect("tab activity");
+
+    nwg::Tab::builder()
+        .parent(&tabs)
+        .text("Supabase Cloud Sync")
+        .build(&mut tab_supabase)
+        .expect("tab supabase");
+
+    nwg::Tab::builder()
+        .parent(&tabs)
+        .text("Preferences & Maintenance")
+        .build(&mut tab_prefs)
+        .expect("tab preferences");
+
+    // --- TAB 1 (Activity) BUILD ---
+    nwg::Label::builder()
+        .text("Realtime Screentime Activity Stats")
+        .parent(&tab_activity)
         .build(&mut header)
         .expect("dashboard header");
 
     nwg::Label::builder()
         .text("Today total: 0s")
-        .parent(&window)
+        .parent(&tab_activity)
         .build(&mut total_label)
         .expect("dashboard total");
 
     nwg::Label::builder()
         .text("Tracking: Running")
-        .parent(&window)
+        .parent(&tab_activity)
         .build(&mut tracking_label)
         .expect("dashboard tracking status");
 
+    nwg::Button::builder()
+        .text("Period: Today")
+        .parent(&tab_activity)
+        .build(&mut period_btn)
+        .expect("dashboard period btn");
+
+    nwg::Button::builder()
+        .text("View: Combined")
+        .parent(&tab_activity)
+        .build(&mut web_toggle_btn)
+        .expect("dashboard view btn");
+
+    nwg::Button::builder()
+        .text("Pause Tracking")
+        .parent(&tab_activity)
+        .build(&mut tracking_btn)
+        .expect("dashboard tracking btn");
+
+    nwg::Button::builder()
+        .text("Today's Summary")
+        .parent(&tab_activity)
+        .build(&mut today_btn)
+        .expect("dashboard today btn");
+
     nwg::TextBox::builder()
-        .parent(&window)
+        .parent(&tab_activity)
         .readonly(true)
         .flags(
             nwg::TextBoxFlags::VISIBLE
@@ -292,104 +374,8 @@ pub fn show_dashboard_window(
         .build(&mut stats_box)
         .expect("dashboard stats");
 
-    nwg::Button::builder()
-        .text("Period: Today")
-        .parent(&window)
-        .build(&mut period_btn)
-        .expect("dashboard period btn");
-
-    nwg::Button::builder()
-        .text("View: Combined")
-        .parent(&window)
-        .build(&mut web_toggle_btn)
-        .expect("dashboard view btn");
-
-    nwg::Button::builder()
-        .text("Pause Tracking")
-        .parent(&window)
-        .build(&mut tracking_btn)
-        .expect("dashboard tracking btn");
-
-    nwg::Button::builder()
-        .text("Supabase Settings")
-        .parent(&window)
-        .build(&mut open_settings_btn)
-        .expect("dashboard settings btn");
-
-    nwg::Button::builder()
-        .text("Today's Summary")
-        .parent(&window)
-        .build(&mut today_btn)
-        .expect("dashboard today btn");
-
-    nwg::Button::builder()
-        .text("Reset All Data")
-        .parent(&window)
-        .build(&mut reset_all_btn)
-        .expect("dashboard reset all btn");
-
-    nwg::Label::builder()
-        .text("Idle threshold (sec)")
-        .parent(&window)
-        .build(&mut idle_label)
-        .expect("dashboard idle label");
-
-    nwg::TextInput::builder()
-        .parent(&window)
-        .build(&mut idle_input)
-        .expect("dashboard idle input");
-
-    nwg::Button::builder()
-        .text("Apply Idle")
-        .parent(&window)
-        .build(&mut idle_apply_btn)
-        .expect("dashboard idle apply btn");
-
-    nwg::Button::builder()
-        .text("Minimize to Tray")
-        .parent(&window)
-        .build(&mut minimize_tray_btn)
-        .expect("dashboard minimize btn");
-
-    nwg::Button::builder()
-        .text("Restore Tray Icon")
-        .parent(&window)
-        .build(&mut restore_tray_btn)
-        .expect("dashboard restore tray btn");
-
-    nwg::TextInput::builder()
-        .text("App name to reset")
-        .parent(&window)
-        .build(&mut reset_app_input)
-        .expect("dashboard reset app input");
-
-    nwg::Button::builder()
-        .text("Reset App Data")
-        .parent(&window)
-        .build(&mut reset_app_btn)
-        .expect("dashboard reset app btn");
-
-    nwg::Button::builder()
-        .text("Export JSON")
-        .parent(&window)
-        .build(&mut export_btn)
-        .expect("dashboard export btn");
-
-    nwg::Button::builder()
-        .text("Exit App")
-        .parent(&window)
-        .build(&mut exit_btn)
-        .expect("dashboard exit btn");
-
-    nwg::AnimationTimer::builder()
-        .parent(&window)
-        .interval(Duration::from_millis(1000))
-        .active(true)
-        .build(&mut timer)
-        .expect("dashboard timer");
-
     nwg::GridLayout::builder()
-        .parent(&window)
+        .parent(&tab_activity)
         .spacing(8)
         .child_item(nwg::GridLayoutItem::new(&header, 0, 0, 4, 1))
         .child_item(nwg::GridLayoutItem::new(&total_label, 0, 1, 4, 1))
@@ -397,26 +383,250 @@ pub fn show_dashboard_window(
         .child_item(nwg::GridLayoutItem::new(&period_btn, 0, 3, 1, 1))
         .child_item(nwg::GridLayoutItem::new(&web_toggle_btn, 1, 3, 1, 1))
         .child_item(nwg::GridLayoutItem::new(&tracking_btn, 2, 3, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&open_settings_btn, 3, 3, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&stats_box, 0, 4, 4, 1))
-        .child_item(nwg::GridLayoutItem::new(&today_btn, 0, 5, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&export_btn, 1, 5, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&reset_all_btn, 2, 5, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&exit_btn, 3, 5, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&idle_label, 0, 6, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&idle_input, 1, 6, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&idle_apply_btn, 2, 6, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&minimize_tray_btn, 3, 6, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&reset_app_input, 0, 7, 3, 1))
-        .child_item(nwg::GridLayoutItem::new(&reset_app_btn, 3, 7, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&restore_tray_btn, 3, 8, 1, 1))
-        .build(&mut layout)
-        .expect("dashboard layout");
+        .child_item(nwg::GridLayoutItem::new(&today_btn, 3, 3, 1, 1))
+        .child_item(nwg::GridLayoutItem::new(&stats_box, 0, 4, 4, 4))
+        .build(&mut layout_activity)
+        .expect("activity layout");
 
+    // --- TAB 2 (Supabase Cloud Sync) BUILD ---
+    nwg::CheckBox::builder()
+        .text("Enable Supabase Sync")
+        .parent(&tab_supabase)
+        .build(&mut enable_sync)
+        .expect("enable sync check");
+
+    nwg::Label::builder()
+        .text("Supabase URL")
+        .parent(&tab_supabase)
+        .build(&mut lbl_url)
+        .expect("label url");
+
+    nwg::TextInput::builder()
+        .parent(&tab_supabase)
+        .build(&mut url)
+        .expect("url input");
+
+    nwg::Label::builder()
+        .text("Anon Key")
+        .parent(&tab_supabase)
+        .build(&mut lbl_key)
+        .expect("label key");
+
+    nwg::TextInput::builder()
+        .parent(&tab_supabase)
+        .password(Some('*'))
+        .build(&mut anon_key)
+        .expect("key input");
+
+    nwg::Label::builder()
+        .text("User ID (LifeOS UUID)")
+        .parent(&tab_supabase)
+        .build(&mut lbl_uid)
+        .expect("label uid");
+
+    nwg::TextInput::builder()
+        .parent(&tab_supabase)
+        .password(Some('*'))
+        .build(&mut user_id)
+        .expect("user id input");
+
+    nwg::Button::builder()
+        .text("🌐 Open LifeOS GitHub")
+        .parent(&tab_supabase)
+        .build(&mut lifeos_link_btn)
+        .expect("lifeos link btn");
+
+    nwg::Label::builder()
+        .text("Upload Interval (minutes)")
+        .parent(&tab_supabase)
+        .build(&mut lbl_interval)
+        .expect("label interval");
+
+    nwg::TextInput::builder()
+        .parent(&tab_supabase)
+        .build(&mut interval)
+        .expect("interval input");
+
+    nwg::Button::builder()
+        .text("🔌 Test Connection")
+        .parent(&tab_supabase)
+        .build(&mut test_btn)
+        .expect("test btn");
+
+    nwg::Button::builder()
+        .text("Save Settings")
+        .parent(&tab_supabase)
+        .build(&mut save_btn)
+        .expect("save btn");
+
+    nwg::Label::builder()
+        .text("Logon Time: Loading...")
+        .parent(&tab_supabase)
+        .build(&mut logon_time_lbl)
+        .expect("logon label");
+
+    nwg::Label::builder()
+        .text("Last Upload: Loading...")
+        .parent(&tab_supabase)
+        .build(&mut last_upload_lbl)
+        .expect("last upload label");
+
+    nwg::GridLayout::builder()
+        .parent(&tab_supabase)
+        .spacing(8)
+        .child_item(nwg::GridLayoutItem::new(&enable_sync, 0, 0, 3, 1))
+        .child_item(nwg::GridLayoutItem::new(&lbl_url, 0, 1, 1, 1))
+        .child_item(nwg::GridLayoutItem::new(&url, 1, 1, 2, 1))
+        .child_item(nwg::GridLayoutItem::new(&lbl_key, 0, 2, 1, 1))
+        .child_item(nwg::GridLayoutItem::new(&anon_key, 1, 2, 2, 1))
+        .child_item(nwg::GridLayoutItem::new(&lbl_uid, 0, 3, 1, 1))
+        .child_item(nwg::GridLayoutItem::new(&user_id, 1, 3, 2, 1))
+        .child_item(nwg::GridLayoutItem::new(&lbl_interval, 0, 4, 1, 1))
+        .child_item(nwg::GridLayoutItem::new(&interval, 1, 4, 2, 1))
+        .child_item(nwg::GridLayoutItem::new(&lifeos_link_btn, 0, 5, 1, 1))
+        .child_item(nwg::GridLayoutItem::new(&test_btn, 1, 5, 1, 1))
+        .child_item(nwg::GridLayoutItem::new(&save_btn, 2, 5, 1, 1))
+        .child_item(nwg::GridLayoutItem::new(&logon_time_lbl, 0, 6, 3, 1))
+        .child_item(nwg::GridLayoutItem::new(&last_upload_lbl, 0, 7, 3, 1))
+        .build(&mut layout_supabase)
+        .expect("supabase layout");
+
+    // --- TAB 3 (Preferences & Tools) BUILD ---
+    nwg::CheckBox::builder()
+        .text("Start with Windows (Run at logon)")
+        .parent(&tab_prefs)
+        .build(&mut start_with_windows)
+        .expect("start with windows check");
+
+    nwg::CheckBox::builder()
+        .text("Start minimized to tray")
+        .parent(&tab_prefs)
+        .build(&mut start_minimized)
+        .expect("start minimized check");
+
+    nwg::Label::builder()
+        .text("Idle threshold (sec)")
+        .parent(&tab_prefs)
+        .build(&mut lbl_idle)
+        .expect("label idle");
+
+    nwg::TextInput::builder()
+        .parent(&tab_prefs)
+        .build(&mut idle_input)
+        .expect("idle threshold input");
+
+    nwg::Button::builder()
+        .text("Apply Idle")
+        .parent(&tab_prefs)
+        .build(&mut idle_apply_btn)
+        .expect("idle apply btn");
+
+    nwg::TextInput::builder()
+        .text("App name to reset")
+        .parent(&tab_prefs)
+        .build(&mut reset_app_input)
+        .expect("reset app name input");
+
+    nwg::Button::builder()
+        .text("Reset App Data")
+        .parent(&tab_prefs)
+        .build(&mut reset_app_btn)
+        .expect("reset app btn");
+
+    nwg::Button::builder()
+        .text("Export JSON")
+        .parent(&tab_prefs)
+        .build(&mut export_btn)
+        .expect("export btn");
+
+    nwg::Button::builder()
+        .text("Reset All Data")
+        .parent(&tab_prefs)
+        .build(&mut reset_all_btn)
+        .expect("reset all btn");
+
+    nwg::Button::builder()
+        .text("Exit App")
+        .parent(&tab_prefs)
+        .build(&mut exit_btn)
+        .expect("exit app btn");
+
+    nwg::Button::builder()
+        .text("Minimize to Tray")
+        .parent(&tab_prefs)
+        .build(&mut minimize_tray_btn)
+        .expect("minimize btn");
+
+    nwg::Button::builder()
+        .text("Restore Tray Icon")
+        .parent(&tab_prefs)
+        .build(&mut restore_tray_btn)
+        .expect("restore tray btn");
+
+    nwg::GridLayout::builder()
+        .parent(&tab_prefs)
+        .spacing(8)
+        .child_item(nwg::GridLayoutItem::new(&start_with_windows, 0, 0, 4, 1))
+        .child_item(nwg::GridLayoutItem::new(&start_minimized, 0, 1, 4, 1))
+        .child_item(nwg::GridLayoutItem::new(&lbl_idle, 0, 2, 1, 1))
+        .child_item(nwg::GridLayoutItem::new(&idle_input, 1, 2, 2, 1))
+        .child_item(nwg::GridLayoutItem::new(&idle_apply_btn, 3, 2, 1, 1))
+        .child_item(nwg::GridLayoutItem::new(&reset_app_input, 0, 3, 3, 1))
+        .child_item(nwg::GridLayoutItem::new(&reset_app_btn, 3, 3, 1, 1))
+        .child_item(nwg::GridLayoutItem::new(&export_btn, 0, 4, 1, 1))
+        .child_item(nwg::GridLayoutItem::new(&reset_all_btn, 1, 4, 1, 1))
+        .child_item(nwg::GridLayoutItem::new(&exit_btn, 2, 4, 1, 1))
+        .child_item(nwg::GridLayoutItem::new(&minimize_tray_btn, 0, 5, 2, 1))
+        .child_item(nwg::GridLayoutItem::new(&restore_tray_btn, 2, 5, 2, 1))
+        .build(&mut layout_prefs)
+        .expect("preferences layout");
+
+    // --- MAIN WINDOW LAYOUT BUILD ---
+    nwg::GridLayout::builder()
+        .parent(&window)
+        .spacing(4)
+        .child_item(nwg::GridLayoutItem::new(&tabs, 0, 0, 1, 1))
+        .build(&mut main_layout)
+        .expect("main window layout");
+
+    // Populate data
     {
         let s = settings.lock().unwrap();
+        // Tab 2
+        enable_sync.set_check_state(if s.enable_supabase_sync { nwg::CheckBoxState::Checked } else { nwg::CheckBoxState::Unchecked });
+        url.set_text(&s.supabase_url);
+        anon_key.set_text(&s.supabase_anon_key);
+        user_id.set_text(&s.supabase_user_id);
+        interval.set_text(&s.supabase_upload_interval_minutes.to_string());
+        
+        // Tab 3
+        start_with_windows.set_check_state(if s.start_with_windows { nwg::CheckBoxState::Checked } else { nwg::CheckBoxState::Unchecked });
+        start_minimized.set_check_state(if s.start_minimized_to_tray { nwg::CheckBoxState::Checked } else { nwg::CheckBoxState::Unchecked });
         idle_input.set_text(&s.idle_threshold_seconds_clamped().to_string());
     }
+
+    // Set startup logon time
+    let startup_time_str = match crate::STARTUP_TIME.get() {
+        Some(t) => t.format("%Y-%m-%d %H:%M:%S").to_string(),
+        None => "Unknown".to_string(),
+    };
+    logon_time_lbl.set_text(&format!("Logon Time: {}", startup_time_str));
+
+    // Set last upload time
+    let last_upload = supabase::get_last_upload_time();
+    last_upload_lbl.set_text(&format!("Last Upload: {}", last_upload));
+
+    // Preselect default tab if provided
+    if let Some(idx) = default_tab {
+        tabs.set_selected_tab(idx);
+    }
+
+    nwg::AnimationTimer::builder()
+        .parent(&window)
+        .interval(Duration::from_millis(1000))
+        .active(true)
+        .build(&mut timer)
+        .expect("dashboard timer");
 
     let initial_tracking_enabled = tracking_enabled.load(Ordering::SeqCst);
     tracking_btn.set_text(if initial_tracking_enabled {
@@ -441,7 +651,6 @@ pub fn show_dashboard_window(
     let period_btn_handle = period_btn.handle.clone();
     let web_toggle_btn_handle = web_toggle_btn.handle.clone();
     let tracking_btn_handle = tracking_btn.handle.clone();
-    let settings_btn_handle = open_settings_btn.handle.clone();
     let today_btn_handle = today_btn.handle.clone();
     let reset_all_btn_handle = reset_all_btn.handle.clone();
     let idle_apply_btn_handle = idle_apply_btn.handle.clone();
@@ -450,14 +659,21 @@ pub fn show_dashboard_window(
     let reset_app_btn_handle = reset_app_btn.handle.clone();
     let export_btn_handle = export_btn.handle.clone();
     let exit_btn_handle = exit_btn.handle.clone();
+    let test_btn_handle = test_btn.handle.clone();
+    let save_btn_handle = save_btn.handle.clone();
+    let lifeos_link_btn_handle = lifeos_link_btn.handle.clone();
 
     let data_for_timer = Arc::clone(&data);
     let data_for_today = Arc::clone(&data);
-    let data_for_settings = Arc::clone(&data);
-    let settings_for_settings = Arc::clone(&settings);
+    let data_test = Arc::clone(&data);
     let settings_for_idle = Arc::clone(&settings);
+    let settings_for_save = Arc::clone(&settings);
     let tracking_enabled_for_ui = Arc::clone(&tracking_enabled);
     let running_for_exit = Arc::clone(&running);
+
+    let test_result: Arc<std::sync::Mutex<Option<Result<supabase::UploadResult, String>>>> = Arc::new(std::sync::Mutex::new(None));
+    let test_result_for_timer = Arc::clone(&test_result);
+    let test_result_for_test = Arc::clone(&test_result);
 
     let current_period_ref = Rc::clone(&current_period);
     let websites_only_ref = Rc::clone(&websites_only);
@@ -465,7 +681,6 @@ pub fn show_dashboard_window(
 
     nwg::full_bind_event_handler(&window_handle, move |evt, _evt_data, handle| {
         if evt == nwg::Event::OnWindowClose && handle == window_handle {
-            // Let the dispatch loop exit; main will reopen on next tray request.
             nwg::stop_thread_dispatch();
             return;
         }
@@ -481,6 +696,39 @@ pub fn show_dashboard_window(
                 *websites_only_ref.borrow(),
                 tracking_enabled_for_ui.load(Ordering::SeqCst),
             );
+
+            // Check if test connection background task finished
+            let test_opt = {
+                let mut guard = test_result_for_timer.lock().unwrap();
+                guard.take()
+            };
+            if let Some(res) = test_opt {
+                test_btn.set_enabled(true);
+                test_btn.set_text("🔌 Test Connection");
+                match res {
+                    Ok(result) => {
+                        if result.success {
+                            let msg = format!(
+                                "Upload OK.\nApps: {} / {}\nWebsites: {} / {}",
+                                result.apps_inserted,
+                                result.total_apps,
+                                result.websites_inserted,
+                                result.total_websites,
+                            );
+                            nwg::modal_info_message(&window_handle, "Test Connection", &msg);
+                            
+                            let last_upload = supabase::get_last_upload_time();
+                            last_upload_lbl.set_text(&format!("Last Upload: {}", last_upload));
+                        } else {
+                            let msg = result.error_message.unwrap_or_else(|| "Unknown error".to_string());
+                            nwg::modal_info_message(&window_handle, "Upload Failed", &msg);
+                        }
+                    }
+                    Err(err_msg) => {
+                        nwg::modal_info_message(&window_handle, "Runtime Error", &err_msg);
+                    }
+                }
+            }
             return;
         }
 
@@ -517,14 +765,6 @@ pub fn show_dashboard_window(
             return;
         }
 
-        if handle == settings_btn_handle {
-            open_settings_window_async(
-                Arc::clone(&data_for_settings),
-                Arc::clone(&settings_for_settings),
-            );
-            return;
-        }
-
         if handle == today_btn_handle {
             show_today_window(Arc::clone(&data_for_today));
             return;
@@ -535,7 +775,7 @@ pub fn show_dashboard_window(
             if !*armed {
                 *armed = true;
                 reset_all_btn.set_text("Confirm Reset All");
-                nwg::modal_info_message(&nwg::Window::default(), "Confirm", "Click Reset All again to confirm destructive reset.");
+                nwg::modal_info_message(&window_handle, "Confirm", "Click Reset All again to confirm destructive reset.");
                 return;
             }
 
@@ -546,7 +786,7 @@ pub fn show_dashboard_window(
             }
             *armed = false;
             reset_all_btn.set_text("Reset All Data");
-            nwg::modal_info_message(&nwg::Window::default(), "Reset", "All tracked data has been reset.");
+            nwg::modal_info_message(&window_handle, "Reset", "All tracked data has been reset.");
             return;
         }
 
@@ -555,7 +795,7 @@ pub fn show_dashboard_window(
             let input = match parsed {
                 Ok(v) => v,
                 Err(_) => {
-                    idle_label.set_text("Idle threshold (sec) [invalid!]");
+                    lbl_idle.set_text("Idle threshold (sec) [invalid!]");
                     return;
                 }
             };
@@ -572,12 +812,11 @@ pub fn show_dashboard_window(
             }
             save_settings(&updated);
             idle_input.set_text(&clamped.to_string());
-            idle_label.set_text(&format!("Idle (sec) ✓{}s", clamped));
+            lbl_idle.set_text(&format!("Idle (sec) ✓{}s", clamped));
             return;
         }
 
         if handle == minimize_tray_btn_handle {
-            // Close the dashboard window; main loop will reopen it via tray.
             nwg::stop_thread_dispatch();
             return;
         }
@@ -590,7 +829,7 @@ pub fn show_dashboard_window(
         if handle == reset_app_btn_handle {
             let app = reset_app_input.text();
             if app.trim().is_empty() || app == "App name to reset" {
-                nwg::modal_info_message(&nwg::Window::default(), "Reset App", "Enter an app name first.");
+                nwg::modal_info_message(&window_handle, "Reset App", "Enter an app name first.");
                 return;
             }
             let removed = reset_app_data(&app);
@@ -599,200 +838,42 @@ pub fn show_dashboard_window(
                 *guard = load_screen_time_data();
             }
             nwg::modal_info_message(
-                &nwg::Window::default(),
+                &window_handle,
                 "Reset App",
-                &format!("Removed {} matching records for app '{}'.", removed, app),
+                &format!("Reset completed for app: {}. Entries removed: {}", app, removed),
             );
             return;
         }
 
         if handle == export_btn_handle {
             let snapshot = data_for_timer.lock().unwrap().clone();
-            let _ = match export_data_snapshot(&snapshot) {
-                Ok(path) => nwg::modal_info_message(
-                    &nwg::Window::default(),
-                    "Export",
-                    &format!("Exported JSON to:\n{}", path.display()),
-                ),
-                Err(e) => nwg::modal_info_message(
-                    &nwg::Window::default(),
-                    "Export Failed",
-                    &e,
-                ),
-            };
+            match export_data_snapshot(&snapshot) {
+                Ok(path) => {
+                    let msg = format!("Data exported successfully to:\n{}", path.to_string_lossy());
+                    nwg::modal_info_message(&window_handle, "Export JSON", &msg);
+                }
+                Err(e) => {
+                    let msg = format!("Failed to export data: {}", e);
+                    nwg::modal_info_message(&window_handle, "Export Failed", &msg);
+                }
+            }
             return;
         }
 
         if handle == exit_btn_handle {
-            tracking_enabled_for_ui.store(false, Ordering::SeqCst);
             running_for_exit.store(false, Ordering::SeqCst);
-            std::process::exit(0);
-        }
-    });
-
-    nwg::dispatch_thread_events();
-}
-
-pub fn show_settings_window(
-    data: Arc<std::sync::Mutex<ScreenTimeData>>,
-    settings: Arc<std::sync::Mutex<AppSettings>>,
-) {
-    nwg::Font::set_global_family("Segoe UI").ok();
-    let mut window = nwg::Window::default();
-    let mut enable_sync = nwg::CheckBox::default();
-    let mut url = nwg::TextInput::default();
-    let mut anon_key = nwg::TextInput::default();
-    let mut user_id = nwg::TextInput::default();
-    let mut interval = nwg::TextInput::default();
-    let mut idle_threshold = nwg::TextInput::default();
-    let mut start_with_windows = nwg::CheckBox::default();
-    let mut start_minimized = nwg::CheckBox::default();
-    let mut test_btn = nwg::Button::default();
-    let mut save_btn = nwg::Button::default();
-    let mut key_visible_btn = nwg::Button::default();
-    let mut lbl_url = nwg::Label::default();
-    let mut lbl_key = nwg::Label::default();
-    let mut lbl_uid = nwg::Label::default();
-    let mut lbl_interval = nwg::Label::default();
-    let mut lbl_idle = nwg::Label::default();
-    let mut layout = nwg::GridLayout::default();
-    let key_visible = Rc::new(RefCell::new(false));
-
-    nwg::Window::builder()
-        .size((480, 520))
-        .position((300, 200))
-        .title("Chronos Screentime – Cloud Sync (Supabase)")
-        .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE)
-        .build(&mut window)
-        .expect("Build window");
-
-    nwg::CheckBox::builder()
-        .text("Enable Supabase sync")
-        .parent(&window)
-        .build(&mut enable_sync)
-        .expect("checkbox");
-    nwg::Label::builder()
-        .text("Supabase URL")
-        .parent(&window)
-        .build(&mut lbl_url)
-        .expect("label url");
-    nwg::TextInput::builder()
-        .parent(&window)
-        .build(&mut url)
-        .expect("url");
-    nwg::Label::builder()
-        .text("Anon Key")
-        .parent(&window)
-        .build(&mut lbl_key)
-        .expect("label key");
-    nwg::TextInput::builder()
-        .parent(&window)
-        .password(Some('*'))
-        .build(&mut anon_key)
-        .expect("anon key");
-    nwg::Button::builder()
-        .text("👁 Show Key")
-        .parent(&window)
-        .build(&mut key_visible_btn)
-        .expect("key btn");
-    nwg::Label::builder()
-        .text("User ID (LifeOS)")
-        .parent(&window)
-        .build(&mut lbl_uid)
-        .expect("label uid");
-    nwg::TextInput::builder()
-        .parent(&window)
-        .build(&mut user_id)
-        .expect("user id");
-    nwg::Label::builder()
-        .text("Upload interval (minutes)")
-        .parent(&window)
-        .build(&mut lbl_interval)
-        .expect("label interval");
-    nwg::TextInput::builder()
-        .parent(&window)
-        .build(&mut interval)
-        .expect("interval");
-    nwg::Label::builder()
-        .text("Idle threshold (seconds)")
-        .parent(&window)
-        .build(&mut lbl_idle)
-        .expect("label idle");
-    nwg::CheckBox::builder()
-        .text("Start with Windows (Run at logon)")
-        .parent(&window)
-        .build(&mut start_with_windows)
-        .expect("start with windows checkbox");
-    nwg::CheckBox::builder()
-        .text("Start minimized to tray")
-        .parent(&window)
-        .build(&mut start_minimized)
-        .expect("start minimized checkbox");
-    nwg::TextInput::builder()
-        .parent(&window)
-        .build(&mut idle_threshold)
-        .expect("idle threshold");
-    nwg::Button::builder()
-        .text("🔌 Test Connection")
-        .parent(&window)
-        .build(&mut test_btn)
-        .expect("test btn");
-    nwg::Button::builder()
-        .text("Save")
-        .parent(&window)
-        .build(&mut save_btn)
-        .expect("save btn");
-
-    {
-        let s = settings.lock().unwrap();
-        enable_sync.set_check_state(if s.enable_supabase_sync { nwg::CheckBoxState::Checked } else { nwg::CheckBoxState::Unchecked });
-        url.set_text(&s.supabase_url);
-        anon_key.set_text(&s.supabase_anon_key);
-        user_id.set_text(&s.supabase_user_id);
-        interval.set_text(&s.supabase_upload_interval_minutes.to_string());
-        idle_threshold.set_text(&s.idle_threshold_seconds_clamped().to_string());
-        start_with_windows.set_check_state(if s.start_with_windows { nwg::CheckBoxState::Checked } else { nwg::CheckBoxState::Unchecked });
-        start_minimized.set_check_state(if s.start_minimized_to_tray { nwg::CheckBoxState::Checked } else { nwg::CheckBoxState::Unchecked });
-    }
-
-    nwg::GridLayout::builder()
-        .parent(&window)
-        .spacing(6)
-        .child_item(nwg::GridLayoutItem::new(&enable_sync, 0, 0, 2, 1))
-        .child_item(nwg::GridLayoutItem::new(&lbl_url, 0, 1, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&url, 1, 1, 2, 1))
-        .child_item(nwg::GridLayoutItem::new(&lbl_key, 0, 2, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&anon_key, 1, 2, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&key_visible_btn, 2, 2, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&lbl_uid, 0, 3, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&user_id, 1, 3, 2, 1))
-        .child_item(nwg::GridLayoutItem::new(&lbl_interval, 0, 4, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&interval, 1, 4, 2, 1))
-        .child_item(nwg::GridLayoutItem::new(&lbl_idle, 0, 5, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&idle_threshold, 1, 5, 2, 1))
-        .child_item(nwg::GridLayoutItem::new(&start_with_windows, 0, 6, 2, 1))
-        .child_item(nwg::GridLayoutItem::new(&start_minimized, 0, 7, 2, 1))
-        .child_item(nwg::GridLayoutItem::new(&test_btn, 1, 8, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&save_btn, 2, 8, 1, 1))
-        .build(&mut layout)
-        .expect("layout");
-
-    let save_btn_handle = save_btn.handle.clone();
-    let test_btn_handle = test_btn.handle.clone();
-    let key_btn_handle = key_visible_btn.handle.clone();
-    let window_handle = window.handle.clone();
-    let settings_save = settings.clone();
-    let data_test = data.clone();
-    let key_visible_clone = Rc::clone(&key_visible);
-
-    nwg::full_bind_event_handler(&window_handle, move |evt, _evt_data, handle| {
-        if evt == nwg::Event::OnWindowClose && handle == window_handle {
             nwg::stop_thread_dispatch();
             return;
         }
-        if evt != nwg::Event::OnButtonClick {
+
+        if handle == lifeos_link_btn_handle {
+            std::process::Command::new("cmd")
+                .args(["/C", "start", "https://github.com/ghassanelgendy/lifeOS/"])
+                .spawn()
+                .ok();
             return;
         }
+
         if handle == save_btn_handle {
             let s = AppSettings {
                 enable_supabase_sync: enable_sync.check_state() == nwg::CheckBoxState::Checked,
@@ -800,94 +881,75 @@ pub fn show_settings_window(
                 supabase_anon_key: anon_key.text(),
                 supabase_user_id: user_id.text(),
                 supabase_upload_interval_minutes: interval.text().parse().unwrap_or(30),
-                idle_threshold_seconds: idle_threshold.text().parse().unwrap_or(120),
+                idle_threshold_seconds: idle_input.text().parse().unwrap_or(120),
                 start_with_windows: start_with_windows.check_state() == nwg::CheckBoxState::Checked,
                 start_minimized_to_tray: start_minimized.check_state() == nwg::CheckBoxState::Checked,
             };
             {
-                let mut guard = settings_save.lock().unwrap();
+                let mut guard = settings_for_save.lock().unwrap();
                 *guard = s.clone();
             }
             save_settings(&s);
             if let Err(e) = startup::set_run_at_startup(s.start_with_windows) {
                 eprintln!("[chronos] set startup failed: {}", e);
             }
-            nwg::modal_info_message(&nwg::Window::default(), "Saved", "Settings saved.");
+            let clamped = s.idle_threshold_seconds_clamped();
+            idle_input.set_text(&clamped.to_string());
+            nwg::modal_info_message(&window_handle, "Saved", "Settings saved successfully.");
             return;
         }
+
         if handle == test_btn_handle {
             let s = AppSettings {
-                enable_supabase_sync: false,
+                enable_supabase_sync: enable_sync.check_state() == nwg::CheckBoxState::Checked,
                 supabase_url: url.text(),
                 supabase_anon_key: anon_key.text(),
                 supabase_user_id: user_id.text(),
                 supabase_upload_interval_minutes: interval.text().parse().unwrap_or(30),
-                idle_threshold_seconds: idle_threshold.text().parse().unwrap_or(120),
+                idle_threshold_seconds: idle_input.text().parse().unwrap_or(120),
                 start_with_windows: start_with_windows.check_state() == nwg::CheckBoxState::Checked,
                 start_minimized_to_tray: start_minimized.check_state() == nwg::CheckBoxState::Checked,
             };
             if s.supabase_url.is_empty() || s.supabase_anon_key.is_empty() || s.supabase_user_id.is_empty() {
-                nwg::modal_info_message(&nwg::Window::default(), "Error", "Please set URL, Anon Key, and User ID.");
+                nwg::modal_info_message(&window_handle, "Error", "Please set URL, Anon Key, and User ID.");
                 return;
             }
             if uuid::Uuid::parse_str(s.supabase_user_id.trim()).is_err() {
-                nwg::modal_info_message(&nwg::Window::default(), "Error", "User ID must be a valid UUID.");
+                nwg::modal_info_message(&window_handle, "Error", "User ID must be a valid UUID.");
                 return;
             }
+
+            test_btn.set_text("Testing...");
+            test_btn.set_enabled(false);
+
             let to_upload = data_test.lock().unwrap().clone();
             let device_id = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "PC".to_string());
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            let result = rt.block_on(supabase::upload_screentime_data(
-                &to_upload,
-                &s.supabase_url,
-                &s.supabase_anon_key,
-                &s.supabase_user_id,
-                &device_id,
-                0,
-            ));
-            if result.success {
-                let msg = format!(
-                    "Upload OK.\nApps: {} / {}\nWebsites: {} / {}",
-                    result.apps_inserted,
-                    result.total_apps,
-                    result.websites_inserted,
-                    result.total_websites,
-                );
-                nwg::modal_info_message(&nwg::Window::default(), "Test Connection", &msg);
-            } else {
-                let msg = result.error_message.unwrap_or_else(|| "Unknown error".to_string());
-                nwg::modal_info_message(&nwg::Window::default(), "Upload Failed", &msg);
-            }
-            return;
-        }
-        if handle == key_btn_handle {
-            let mut v = key_visible_clone.borrow_mut();
-            *v = !*v;
-            let visible = *v;
-            drop(v);
-            if visible {
-                anon_key.set_password_char(None);
-                key_visible_btn.set_text("🙈 Hide Key");
-            } else {
-                anon_key.set_password_char(Some('*'));
-                key_visible_btn.set_text("👁 Show Key");
-            }
+            let test_result_clone = Arc::clone(&test_result_for_test);
+
+            std::thread::spawn(move || {
+                let rt = match tokio::runtime::Runtime::new() {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let mut guard = test_result_clone.lock().unwrap();
+                        *guard = Some(Err(format!("Failed to start runtime: {}", e)));
+                        return;
+                    }
+                };
+                let result = rt.block_on(supabase::upload_screentime_data(
+                    &to_upload,
+                    &s.supabase_url,
+                    &s.supabase_anon_key,
+                    &s.supabase_user_id,
+                    &device_id,
+                    0, // Bypass time-gating checks
+                ));
+                let mut guard = test_result_clone.lock().unwrap();
+                *guard = Some(Ok(result));
+            });
         }
     });
 
     nwg::dispatch_thread_events();
 }
 
-/// Open settings window on a dedicated UI thread so it cannot stop the main dashboard loop.
-pub fn open_settings_window_async(
-    data: Arc<std::sync::Mutex<ScreenTimeData>>,
-    settings: Arc<std::sync::Mutex<AppSettings>>,
-) {
-    std::thread::spawn(move || {
-        if let Err(e) = nwg::init() {
-            eprintln!("[chronos] settings ui init failed: {}", e);
-            return;
-        }
-        show_settings_window(data, settings);
-    });
-}
+
