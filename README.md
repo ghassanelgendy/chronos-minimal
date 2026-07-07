@@ -5,6 +5,15 @@
 [![Rust Version](https://img.shields.io/badge/rust-1.75%2B-e3592c?style=flat-square)](https://www.rust-lang.org)
 [![Platform](https://img.shields.io/badge/platform-windows-lightgray?style=flat-square)](#)
 
+<p align="center">
+  <em>
+    Chronos is also the 
+    <a href="https://en.wikipedia.org/wiki/Chronos" target="_blank">
+      Greek god of time!
+    </a>
+  </em>
+</p>
+
 Chronos Minimal is a lightweight background screen time tracker for Windows. It is a Rust port of the original [.NET/WPF Chronos](https://github.com/ghassanelgendy/chronos-screentime), rewritten from scratch for near-zero CPU/RAM usage and a minimal system footprint.
 
 The app sits in your system tray, tracks active application usage (including browser domains from window titles), and syncs your logs securely to a Supabase database.
