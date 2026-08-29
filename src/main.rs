@@ -303,6 +303,11 @@ fn init_linux_tray(
 }
 
 fn main() {
+    #[cfg(not(windows))]
+    {
+        std::env::set_var("WINIT_UNIX_BACKEND", "x11");
+    }
+
     STARTUP_TIME.set(chrono::Local::now()).ok();
     let args: Vec<String> = std::env::args().collect();
     if args.contains(&"--test-sync".to_string()) {
