@@ -1,3 +1,35 @@
-/target
-/target
-/target
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Environment & secrets
+.env
+.env.*
+*.env
+*.key
+*.pem
+*.token
+*.secret
+
+# User Screentime runtime data, logs, and configs
+*.log
+*.sqlite
+*.sqlite3
+*.db
+data.json
+settings.json
+supabase_cache.json
+*.snapshot.json
+ChronosScreenTime/
+.config/
+logs/
+data/
+
+# OS and Editor artifacts
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+*.bak
