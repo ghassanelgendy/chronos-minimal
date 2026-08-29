@@ -281,7 +281,6 @@ impl eframe::App for ChronosApp {
         if ctx.input(|i| i.viewport().close_requested()) {
             if self.close_to_tray {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             } else {
                 self.tracker_running.store(false, Ordering::SeqCst);

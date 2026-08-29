@@ -102,6 +102,10 @@ pub fn ensure_icon_installed() -> String {
         let local_data = base.data_local_dir();
         let primary_icon = local_data.join("icons").join("hicolor").join("256x256").join("apps").join(format!("{}.png", APP_ID));
 
+        if primary_icon.exists() {
+            return primary_icon.to_string_lossy().to_string();
+        }
+
         if let Ok(img) = image::load_from_memory_with_format(icon_bytes, image::ImageFormat::Png) {
             let sizes = [16, 22, 24, 32, 48, 64, 128, 256];
             for size in sizes {
