@@ -1,9 +1,9 @@
 # Chronos Minimal
 
 [![GitHub Release](https://img.shields.io/github/v/tag/ghassanelgendy/chronos-minimal?style=flat-square&color=0066cc&label=release)](https://github.com/ghassanelgendy/chronos-minimal/releases)
-[![Downloads](https://img.shields.io/github/downloads/ghassanelgendy/chronos-minimal/total?style=flat-square&color=2ea44f)](https://github.com/ghassanelgendy/chronos-minimal/releases)
 [![Rust Version](https://img.shields.io/badge/rust-1.75%2B-e3592c?style=flat-square)](https://www.rust-lang.org)
-[![Platform](https://img.shields.io/badge/platform-windows-lightgray?style=flat-square)](#)
+[![Platforms](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-blue?style=flat-square)](#)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](LICENSE)
 
 <p align="center">
   <em>
@@ -14,68 +14,109 @@
   </em>
 </p>
 
-Chronos Minimal is a lightweight background screen time tracker for Windows. It is a Rust port of the original [.NET/WPF Chronos](https://github.com/ghassanelgendy/chronos-screentime), rewritten from scratch for near-zero CPU/RAM usage and a minimal system footprint.
-
-The app sits in your system tray, tracks active application usage (including browser domains from window titles), and syncs your logs securely to a Supabase database.
+Chronos Minimal is a lightweight background screen time tracker for **Linux** and **Windows**. Written in Rust for near-zero CPU and RAM usage, it tracks your active applications, processes, and visited websites, and syncs your usage logs securely to a Supabase database.
 
 ---
 
-### [**Download Latest Windows Release**](https://github.com/ghassanelgendy/chronos-minimal/releases/latest)
-
-*Download and run `chronos-screentime.exe` to start tracking. No installation required.*
+### [**Download Latest Release (Linux & Windows)**](https://github.com/ghassanelgendy/chronos-minimal/releases/latest)
 
 ---
 
-## Features
+## ✨ Features
 
-- **Resource Efficient:** Uses minimal RAM/CPU by running as a native Windows tray application.
-- **Active App Tracking:** Polls the foreground window every 3 seconds using the native Windows API (`GetForegroundWindow`). Logs the process path, executable name, and extracts base domain names from active browser tabs.
-- **Supabase Integration:** Syncs tracking logs to your Supabase instance using a time-gated local cache to reduce network calls and database writes.
-- **Asynchronous Architecture:** Heavy operations (e.g., connection checks, database uploads) run on background threads to ensure the system tray and UI dashboard remain fully responsive.
-- **Local Cache:** Backs up all tracked activity and configurations locally to `%AppData%\ChronosScreenTime\data.json` and `settings.json`.
-
----
-
-## Dashboard Overview
-
-The app includes a simple three-tab dashboard:
-
-1. **Activity:** Shows today's total screen time, tracking status (pause/resume), activity logs, and historical usage reports.
-2. **Cloud Sync:** Configures Supabase backend credentials, test connection status, and user identifiers.
-3. **Preferences:** Set idle timeout thresholds (pauses tracking when away), toggle startup on logon (registry key), start minimized to tray, and export or reset tracking data.
-
----
-
-## Configuration
-
-Settings are stored in `%AppData%\ChronosScreenTime\settings.json`:
-
-- `EnableSupabaseSync` (bool): Toggle cloud database sync.
-- `SupabaseUrl` (string): Your Supabase API endpoint.
-- `SupabaseAnonKey` (string): Your Supabase anonymous client key.
-- `SupabaseUserId` (string): User identifier for filtering/sync.
-- `SupabaseUploadIntervalMinutes` (int): Frequency of database sync.
-- `IdleThresholdSeconds` (int): Number of seconds of inactivity before tracking pauses automatically.
-- `StartWithWindows` (bool): Auto-run the application at logon.
-- `StartMinimizedToTray` (bool): Hides the window to the tray on launch.
+- **Cross-Platform Background Tracking:**
+  - **Linux:** Native AT-SPI2 accessibility, X11/XWayland, GNOME Mutter integration, and Freedesktop AppIndicator system tray support.
+  - **Windows:** Native Win32 foreground polling and taskbar notification tray.
+- **Smart Website & Web App Detection:**
+  - Extracts domains for web applications (Gemini, ChatGPT, Claude, Perplexity, DeepSeek, YouTube, GitHub, Google Meet, Drive, Docs, Notion, Linear, Reddit, and 70+ others) without double-counting parent browser time.
+  - Development URL support (including `localhost:3000`, `127.0.0.1:8080`).
+  - Distinguishes actual websites from internal browser pages (`New Tab`, `Settings`).
+- **Interactive UI & Calendar Navigation:**
+  - **Sunday-First 7-Day Navigation Strip:** View daily tracked time at a glance (`Sun`..`Sat`).
+  - **Date Navigator:** Quick jump controls (`◀ Prev Day`, `Today`, `Next Day ▶`, `« Prev Week`, `Next Week »`).
+  - **Aggregated Views:** Filter by `📅 Day`, `📊 This Week`, `⏮ Last Week`, or `📆 This Month`.
+  - **Category Filters:** Switch between `All Items`, `📱 Applications`, and `🌐 Websites` with visual share percentage bars.
+- **Desktop & Theme Integration:**
+  - **GNOME WhiteSur Theme Support:** Automatically detects system GTK theme, dark/light mode, and window button layouts (left-aligned macOS traffic lights or standard controls).
+  - **Single Unified Header:** Native window decorations with close-to-indicator behavior (`-` minimizes to dock, `X` closes window into AppIndicator tray).
+- **Idle Inactivity Monitoring:**
+  - Automatically pauses tracking when no keyboard or mouse input is detected (configurable threshold in seconds).
+- **Supabase Cloud Sync:**
+  - Syncs cumulative screen time snapshots to Supabase Edge Functions with local time-gated caching to minimize database writes.
+- **Data Privacy:**
+  - Personal logs, databases, snapshots, and configuration files are kept strictly local in `~/.config/ChronosScreenTime/` (or `%AppData%\ChronosScreenTime\`) and excluded from version control.
 
 ---
 
-## Building from Source
+## 🚀 Quick Start & Installation
 
-You will need the Rust toolchain (stable) installed.
+### Linux (Ubuntu / Debian / Fedora / Arch)
 
-### Build Executable
+You can install Chronos with the included installer script:
 
-To build the optimized release binary:
+```bash
+git clone https://github.com/ghassanelgendy/chronos-minimal.git
+cd chronos-minimal
+chmod +x install.sh uninstall.sh
+./install.sh
+```
+
+Or manually install the release binary:
+```bash
+cargo build --release
+install -m 755 target/release/chronos-screentime ~/.local/bin/chronos-screentime
+```
+
+To run Chronos in the background / AppIndicator tray on startup:
+```bash
+~/.local/bin/chronos-screentime --minimized
+```
+
+### Windows
+
+1. Download `chronos-screentime-windows-x86_64.zip` from the [Releases](https://github.com/ghassanelgendy/chronos-minimal/releases).
+2. Extract and run `chronos-screentime.exe`.
+
+---
+
+## ⚙️ Configuration
+
+Settings are stored in `~/.config/ChronosScreenTime/settings.json` (Linux) or `%AppData%\ChronosScreenTime\settings.json` (Windows):
+
+| Field | Type | Description |
+|---|---|---|
+| `EnableSupabaseSync` | `bool` | Toggle Supabase cloud database sync |
+| `SupabaseUrl` | `string` | Supabase API endpoint (e.g. `https://xyz.supabase.co`) |
+| `SupabaseAnonKey` | `string` | Supabase anonymous / public API key |
+| `SupabaseUserId` | `string` | User identifier for database partitioning |
+| `SupabaseUploadIntervalMinutes` | `int` | Upload sync interval in minutes |
+| `IdleThresholdSeconds` | `int` | Inactivity timeout before pausing tracking (seconds) |
+| `StartWithWindows` | `bool` | Auto-start Chronos on user login |
+| `StartMinimizedToTray` | `bool` | Start directly into the system tray / AppIndicator |
+| `CloseToTray` | `bool` | Clicking `X` closes window into AppIndicator tray |
+
+---
+
+## 🛠️ Building & Testing
+
+### Prerequisites
+
+- **Rust toolchain (stable 1.75+)**
+- **Linux Packages:** `libxcb-render0-dev`, `libxcb-shape0-dev`, `libxcb-xfixes0-dev`, `libx11-dev`, `libdbus-1-dev`, `libgtk-3-dev`
+
+```bash
+# Ubuntu / Debian dependencies
+sudo apt-get update
+sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libx11-dev libdbus-1-dev libgtk-3-dev pkg-config
+```
+
+### Build
 
 ```bash
 cargo build --release
 ```
 
-The compiled binary will be at `target\release\chronos-screentime.exe`.
-
-### Running Tests
+### Test
 
 ```bash
 cargo test
@@ -83,18 +124,15 @@ cargo test
 
 ---
 
-## Technical Stack
+## 📦 Automated CI/CD Releases
 
-- **Core Engine:** Rust (edition 2021)
-- **GUI & Tray:** `native-windows-gui` (NWG) & `tray-item`
-- **Async Runtime:** `tokio`
-- **Network Client:** `reqwest`
-- **JSON Serialization:** `serde` & `serde_json`
-- **Time/Dates:** `chrono`
-- **Windows API:** `windows` crate
+Automated cross-platform builds and GitHub releases are managed via GitHub Actions:
+- Pushing a new tag (e.g. `v0.2.0`) triggers `.github/workflows/build-and-release.yml`.
+- The workflow compiles release binaries for both Linux (`x86_64-unknown-linux-gnu`) and Windows (`x86_64-pc-windows-msvc`) and attaches the release archives.
 
 ---
 
-## License
+## 📄 License
 
 Distributed under the MIT License. See `LICENSE` for details.
+
