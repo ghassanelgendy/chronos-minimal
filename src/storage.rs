@@ -7,7 +7,7 @@ use std::path::PathBuf;
 // %AppData%\ChronosScreenTime (SUPABASE_SYNC Section 3)
 const QUALIFIER: &str = "";
 const ORG: &str = "ChronosScreenTime";
-const APP: &str = "";
+const APP: &str = "ChronosScreenTime";
 const DATA_FILE: &str = "screentime_data.json";
 const SETTINGS_FILE: &str = "settings.json";
 
@@ -15,9 +15,15 @@ fn project_dirs() -> Option<ProjectDirs> {
     ProjectDirs::from(QUALIFIER, ORG, APP)
 }
 
-/// Base directory: %AppData%\ChronosScreenTime (SUPABASE_SYNC Section 3).
+/// Base directory: %AppData%\ChronosScreenTime on Windows, ~/.config/ChronosScreenTime on Linux.
 pub fn data_dir() -> Option<PathBuf> {
-    project_dirs().map(|d| d.config_dir().to_path_buf())
+    if let Some(proj) = project_dirs() {
+        Some(proj.config_dir().to_path_buf())
+    } else if let Some(base) = directories::BaseDirs::new() {
+        Some(base.config_dir().join(ORG))
+    } else {
+        None
+    }
 }
 
 fn ensure_data_dir() -> Option<PathBuf> {
@@ -34,15 +40,33 @@ pub fn settings_file_path() -> Option<PathBuf> {
     ensure_data_dir().map(|d| d.join(SETTINGS_FILE))
 }
 
+fn legacy_data_path() -> Option<PathBuf> {
+    directories::BaseDirs::new().map(|b| b.config_dir().join(DATA_FILE))
+}
+
+fn legacy_settings_path() -> Option<PathBuf> {
+    directories::BaseDirs::new().map(|b| b.config_dir().join(SETTINGS_FILE))
+}
+
 pub fn load_screen_time_data() -> ScreenTimeData {
     let path = match data_file_path() {
         Some(p) => p,
         None => return ScreenTimeData::default(),
     };
-    let Ok(bytes) = std::fs::read(&path) else {
-        return ScreenTimeData::default();
-    };
-    serde_json::from_slice(&bytes).unwrap_or_default()
+    if let Ok(bytes) = std::fs::read(&path) {
+        return serde_json::from_slice(&bytes).unwrap_or_default();
+    }
+    // Check legacy path if primary doesn't exist
+    if let Some(legacy) = legacy_data_path() {
+        if legacy != path && legacy.exists() {
+            if let Ok(bytes) = std::fs::read(&legacy) {
+                let data: ScreenTimeData = serde_json::from_slice(&bytes).unwrap_or_default();
+                save_screen_time_data(&data);
+                return data;
+            }
+        }
+    }
+    ScreenTimeData::default()
 }
 
 pub fn save_screen_time_data(data: &ScreenTimeData) {
@@ -105,10 +129,20 @@ pub fn load_settings() -> AppSettings {
         Some(p) => p,
         None => return AppSettings::default(),
     };
-    let Ok(bytes) = std::fs::read(&path) else {
-        return AppSettings::default();
-    };
-    serde_json::from_slice(&bytes).unwrap_or_default()
+    if let Ok(bytes) = std::fs::read(&path) {
+        return serde_json::from_slice(&bytes).unwrap_or_default();
+    }
+    // Check legacy path if primary doesn't exist
+    if let Some(legacy) = legacy_settings_path() {
+        if legacy != path && legacy.exists() {
+            if let Ok(bytes) = std::fs::read(&legacy) {
+                let settings: AppSettings = serde_json::from_slice(&bytes).unwrap_or_default();
+                save_settings(&settings);
+                return settings;
+            }
+        }
+    }
+    AppSettings::default()
 }
 
 pub fn save_settings(settings: &AppSettings) {
