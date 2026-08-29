@@ -324,6 +324,124 @@ pub fn is_internal_browser_page(clean_title: &str) -> bool {
         || lower.starts_with("vivaldi://")
 }
 
+fn is_github_repo_title(segment: &str) -> bool {
+    let s = segment.trim();
+    let candidate = s.split(':').next().unwrap_or(s).split(" · ").next().unwrap_or(s).trim();
+    if let Some((user, rest)) = candidate.split_once('/') {
+        let repo = rest.split_whitespace().next().unwrap_or(rest).trim_matches(':');
+        if !user.is_empty()
+            && !repo.is_empty()
+            && !user.contains(' ')
+            && !repo.contains(' ')
+            && user.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            && repo.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn brand_token_to_domain(token: &str) -> Option<&'static str> {
+    let t = token.trim().to_lowercase();
+    match t.as_str() {
+        "github" => Some("github.com"),
+        "gitlab" => Some("gitlab.com"),
+        "bitbucket" => Some("bitbucket.org"),
+        "youtube" | "youtube music" | "youtube studio" => Some("youtube.com"),
+        "gemini" | "google gemini" => Some("gemini.google.com"),
+        "chatgpt" | "openai" => Some("chatgpt.com"),
+        "claude" | "claude ai" | "anthropic" => Some("claude.ai"),
+        "perplexity" | "perplexity ai" => Some("perplexity.ai"),
+        "deepseek" | "deepseek ai" => Some("deepseek.com"),
+        "copilot" | "github copilot" | "microsoft copilot" => Some("copilot.microsoft.com"),
+        "grok" | "x.ai" => Some("x.ai"),
+        "google search" | "google" => Some("google.com"),
+        "google meet" | "meet" => Some("meet.google.com"),
+        "google docs" | "docs" => Some("docs.google.com"),
+        "google drive" | "drive" | "my drive" => Some("drive.google.com"),
+        "google sheets" | "sheets" => Some("sheets.google.com"),
+        "google slides" | "slides" => Some("slides.google.com"),
+        "gmail" | "google mail" => Some("mail.google.com"),
+        "google calendar" | "calendar" => Some("calendar.google.com"),
+        "google maps" | "maps" => Some("maps.google.com"),
+        "google photos" | "photos" => Some("photos.google.com"),
+        "google translate" | "translate" => Some("translate.google.com"),
+        "google cloud" | "console.cloud.google" => Some("console.cloud.google.com"),
+        "supabase" => Some("supabase.com"),
+        "vercel" => Some("vercel.com"),
+        "netlify" => Some("netlify.app"),
+        "aws" | "amazon web services" | "aws management console" => Some("aws.amazon.com"),
+        "azure" | "azure portal" | "portal.azure" => Some("portal.azure.com"),
+        "cloudflare" => Some("cloudflare.com"),
+        "digitalocean" => Some("digitalocean.com"),
+        "heroku" => Some("heroku.com"),
+        "railway" | "railway.app" => Some("railway.app"),
+        "render" | "render.com" => Some("render.com"),
+        "fly.io" => Some("fly.io"),
+        "replit" => Some("replit.com"),
+        "codesandbox" => Some("codesandbox.io"),
+        "codepen" => Some("codepen.io"),
+        "jsfiddle" => Some("jsfiddle.net"),
+        "stackoverflow" | "stack overflow" => Some("stackoverflow.com"),
+        "superuser" | "super user" => Some("superuser.com"),
+        "serverfault" | "server fault" => Some("serverfault.com"),
+        "stack exchange" | "stackexchange" => Some("stackexchange.com"),
+        "hacker news" | "y combinator" | "ycombinator" => Some("news.ycombinator.com"),
+        "product hunt" | "producthunt" => Some("producthunt.com"),
+        "hugging face" | "huggingface" => Some("huggingface.co"),
+        "kaggle" => Some("kaggle.com"),
+        "notion" => Some("notion.so"),
+        "figma" => Some("figma.com"),
+        "canva" => Some("canva.com"),
+        "miro" => Some("miro.com"),
+        "trello" => Some("trello.com"),
+        "asana" => Some("asana.com"),
+        "linear" => Some("linear.app"),
+        "jira" | "atlassian" => Some("atlassian.net"),
+        "confluence" => Some("atlassian.net"),
+        "monday" | "monday.com" => Some("monday.com"),
+        "clickup" => Some("clickup.com"),
+        "airtable" => Some("airtable.com"),
+        "slack" => Some("slack.com"),
+        "discord" => Some("discord.com"),
+        "microsoft teams" | "teams" => Some("teams.microsoft.com"),
+        "zoom" => Some("zoom.us"),
+        "dropbox" => Some("dropbox.com"),
+        "spotify" => Some("spotify.com"),
+        "netflix" => Some("netflix.com"),
+        "twitch" => Some("twitch.tv"),
+        "prime video" | "amazon prime video" => Some("primevideo.com"),
+        "disney+" | "disney plus" => Some("disneyplus.com"),
+        "reddit" => Some("reddit.com"),
+        "twitter" | "x" => Some("x.com"),
+        "linkedin" => Some("linkedin.com"),
+        "facebook" => Some("facebook.com"),
+        "instagram" => Some("instagram.com"),
+        "threads" => Some("threads.net"),
+        "tiktok" => Some("tiktok.com"),
+        "pinterest" => Some("pinterest.com"),
+        "whatsapp" | "whatsapp web" => Some("web.whatsapp.com"),
+        "telegram" | "telegram web" => Some("web.telegram.org"),
+        "bluesky" | "bsky" => Some("bsky.app"),
+        "amazon" => Some("amazon.com"),
+        "ebay" => Some("ebay.com"),
+        "aliexpress" => Some("aliexpress.com"),
+        "walmart" => Some("walmart.com"),
+        "target" => Some("target.com"),
+        "wikipedia" => Some("wikipedia.org"),
+        "medium" => Some("medium.com"),
+        "substack" => Some("substack.com"),
+        "dev.to" => Some("dev.to"),
+        "arxiv" => Some("arxiv.org"),
+        "duckduckgo" => Some("duckduckgo.com"),
+        "bing" => Some("bing.com"),
+        "fast.com" => Some("fast.com"),
+        "speedtest" => Some("speedtest.net"),
+        _ => None,
+    }
+}
+
 /// Extract domain from window title (e.g. "Gemini - Chromium" -> gemini.google.com, "GitHub - Chrome" -> github.com).
 pub fn domain_from_title(title: &str) -> Option<String> {
     let raw_trimmed = title.trim();
@@ -346,198 +464,108 @@ pub fn domain_from_title(title: &str) -> Option<String> {
         return Some(d);
     }
 
-    // 2. High-priority Brand / Keyword Dictionary
+    // 2. Check if clean_title as a whole is a known brand (e.g. "Gemini", "ChatGPT", "Claude", "GitHub")
+    if let Some(d) = brand_token_to_domain(clean_title) {
+        return Some(d.to_string());
+    }
+
+    // 3. GitHub repository / issue / PR pattern (e.g. "ghassanelgendy/chronos-minimal: description")
+    if is_github_repo_title(clean_title) || is_github_repo_title(raw_trimmed) {
+        return Some("github.com".to_string());
+    }
+
+    // 4. Split clean_title and raw_trimmed by standard web title delimiters: " · ", " - ", " — ", " | ", " : ", " • "
+    let separators = [" · ", " - ", " — ", " | ", " : ", " • "];
+    for sep in separators {
+        let parts: Vec<&str> = clean_title.split(sep).map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+        if parts.len() >= 2 {
+            // Check rightmost part first (standard site suffix, e.g. "Page - YouTube", "Issues · GitHub")
+            if let Some(right) = parts.last() {
+                if is_github_repo_title(right) {
+                    return Some("github.com".to_string());
+                }
+                if let Some(d) = normalize_domain(right) {
+                    return Some(d);
+                }
+                if let Some(d) = brand_token_to_domain(right) {
+                    return Some(d.to_string());
+                }
+                if right.to_lowercase().starts_with("r/") {
+                    return Some("reddit.com".to_string());
+                }
+            }
+
+            // Check leftmost part next (standard site prefix, e.g. "GitHub - repo", "Supabase | Dashboard")
+            if let Some(left) = parts.first() {
+                if is_github_repo_title(left) {
+                    return Some("github.com".to_string());
+                }
+                if let Some(d) = normalize_domain(left) {
+                    return Some(d);
+                }
+                if let Some(d) = brand_token_to_domain(left) {
+                    return Some(d.to_string());
+                }
+                if left.to_lowercase().starts_with("r/") {
+                    return Some("reddit.com".to_string());
+                }
+            }
+
+            // Check all other middle parts for explicit domains or brand tokens
+            for part in &parts {
+                if is_github_repo_title(part) {
+                    return Some("github.com".to_string());
+                }
+                if let Some(d) = normalize_domain(part) {
+                    return Some(d);
+                }
+                if let Some(d) = brand_token_to_domain(part) {
+                    return Some(d.to_string());
+                }
+            }
+        }
+    }
+
+    // 5. Check if title starts with standard prefixes: "GitHub", "YouTube", "Reddit", etc.
     let lower = clean_title.to_lowercase();
-
-    let known_brands: &[(&[&str], &str)] = &[
-        // AI & LLM Tools
-        (&["gemini"], "gemini.google.com"),
-        (&["chatgpt", "openai"], "chatgpt.com"),
-        (&["claude"], "claude.ai"),
-        (&["perplexity"], "perplexity.ai"),
-        (&["deepseek"], "deepseek.com"),
-        (&["copilot"], "copilot.microsoft.com"),
-        (&["grok", "x.ai"], "x.ai"),
-        (&["midjourney"], "midjourney.com"),
-        (&["mistral", "le chat"], "mistral.ai"),
-        (&["poe.com"], "poe.com"),
-        (&["huggingface", "hugging face"], "huggingface.co"),
-        (&["kaggle"], "kaggle.com"),
-        (&["colab", "google colab"], "colab.research.google.com"),
-
-        // Google Services
-        (&["google meet", "meet - "], "meet.google.com"),
-        (&["google docs", "docs.google"], "docs.google.com"),
-        (&["google drive", "drive.google", "my drive - google"], "drive.google.com"),
-        (&["google sheets", "sheets.google"], "sheets.google.com"),
-        (&["google slides", "slides.google"], "slides.google.com"),
-        (&["google mail", "gmail", "inbox ("], "mail.google.com"),
-        (&["google calendar", "calendar.google"], "calendar.google.com"),
-        (&["google maps", "maps.google"], "maps.google.com"),
-        (&["google photos", "photos.google"], "photos.google.com"),
-        (&["google translate", "translate.google"], "translate.google.com"),
-        (&["google cloud", "console.cloud.google"], "console.cloud.google.com"),
-        (&["google search", "google"], "google.com"),
-
-        // Dev & Code
-        (&["github"], "github.com"),
-        (&["gitlab"], "gitlab.com"),
-        (&["bitbucket"], "bitbucket.org"),
-        (&["stackoverflow", "stack overflow"], "stackoverflow.com"),
-        (&["superuser", "super user"], "superuser.com"),
-        (&["serverfault", "server fault"], "serverfault.com"),
-        (&["stack exchange", "stackexchange"], "stackexchange.com"),
-        (&["hacker news", "news.ycombinator", "ycombinator"], "news.ycombinator.com"),
-        (&["product hunt", "producthunt"], "producthunt.com"),
-        (&["supabase"], "supabase.com"),
-        (&["vercel"], "vercel.com"),
-        (&["netlify"], "netlify.app"),
-        (&["aws", "amazon web services"], "aws.amazon.com"),
-        (&["azure", "portal.azure"], "portal.azure.com"),
-        (&["cloudflare"], "cloudflare.com"),
-        (&["digitalocean", "digital ocean"], "digitalocean.com"),
-        (&["heroku"], "heroku.com"),
-        (&["railway.app", "railway"], "railway.app"),
-        (&["render.com", "render dashboard"], "render.com"),
-        (&["fly.io"], "fly.io"),
-        (&["replit"], "replit.com"),
-        (&["codesandbox"], "codesandbox.io"),
-        (&["codepen"], "codepen.io"),
-        (&["jsfiddle"], "jsfiddle.net"),
-        (&["npm", "npmjs"], "npmjs.com"),
-        (&["crates.io"], "crates.io"),
-        (&["docs.rs"], "docs.rs"),
-        (&["pypi"], "pypi.org"),
-        (&["docker hub", "dockerhub"], "hub.docker.com"),
-        (&["postman"], "postman.com"),
-        (&["linear"], "linear.app"),
-        (&["jira", "atlassian"], "atlassian.net"),
-        (&["confluence"], "atlassian.net"),
-
-        // Productivity & Workspace
-        (&["notion"], "notion.so"),
-        (&["figma"], "figma.com"),
-        (&["canva"], "canva.com"),
-        (&["miro"], "miro.com"),
-        (&["trello"], "trello.com"),
-        (&["asana"], "asana.com"),
-        (&["monday.com", "monday "], "monday.com"),
-        (&["clickup"], "clickup.com"),
-        (&["airtable"], "airtable.com"),
-        (&["basecamp"], "basecamp.com"),
-        (&["slack"], "slack.com"),
-        (&["discord"], "discord.com"),
-        (&["microsoft teams", "teams.microsoft"], "teams.microsoft.com"),
-        (&["zoom"], "zoom.us"),
-        (&["dropbox"], "dropbox.com"),
-        (&["evernote"], "evernote.com"),
-        (&["overleaf"], "overleaf.com"),
-
-        // Media & Streaming
-        (&["youtube music"], "music.youtube.com"),
-        (&["youtube studio"], "studio.youtube.com"),
-        (&["youtube", "youtu.be"], "youtube.com"),
-        (&["spotify"], "spotify.com"),
-        (&["soundcloud"], "soundcloud.com"),
-        (&["apple music"], "music.apple.com"),
-        (&["netflix"], "netflix.com"),
-        (&["twitch"], "twitch.tv"),
-        (&["prime video", "amazon prime"], "primevideo.com"),
-        (&["disney+", "disney plus"], "disneyplus.com"),
-        (&["hulu"], "hulu.com"),
-        (&["max.com", "hbo max"], "max.com"),
-        (&["crunchyroll"], "crunchyroll.com"),
-        (&["vimeo"], "vimeo.com"),
-        (&["imdb"], "imdb.com"),
-
-        // Social & Communication
-        (&["reddit", "r/"], "reddit.com"),
-        (&["twitter", "x /", "/ x", "x.com"], "x.com"),
-        (&["linkedin"], "linkedin.com"),
-        (&["facebook"], "facebook.com"),
-        (&["instagram"], "instagram.com"),
-        (&["threads.net", "threads"], "threads.net"),
-        (&["tiktok"], "tiktok.com"),
-        (&["pinterest"], "pinterest.com"),
-        (&["snapchat"], "snapchat.com"),
-        (&["whatsapp"], "web.whatsapp.com"),
-        (&["telegram"], "web.telegram.org"),
-        (&["mastodon"], "mastodon.social"),
-        (&["bluesky", "bsky"], "bsky.app"),
-        (&["tumblr"], "tumblr.com"),
-        (&["quora"], "quora.com"),
-
-        // Shopping & Finance
-        (&["amazon"], "amazon.com"),
-        (&["ebay"], "ebay.com"),
-        (&["aliexpress"], "aliexpress.com"),
-        (&["walmart"], "walmart.com"),
-        (&["target"], "target.com"),
-        (&["etsy"], "etsy.com"),
-        (&["paypal"], "paypal.com"),
-        (&["stripe"], "stripe.com"),
-        (&["shopify"], "shopify.com"),
-        (&["binance"], "binance.com"),
-        (&["coinbase"], "coinbase.com"),
-        (&["tradingview"], "tradingview.com"),
-
-        // Reading, News & Reference
-        (&["wikipedia"], "wikipedia.org"),
-        (&["medium"], "medium.com"),
-        (&["substack"], "substack.com"),
-        (&["dev.to"], "dev.to"),
-        (&["arxiv"], "arxiv.org"),
-        (&["researchgate"], "researchgate.net"),
-        (&["bloomberg"], "bloomberg.com"),
-        (&["reuters"], "reuters.com"),
-        (&["nytimes", "new york times"], "nytimes.com"),
-        (&["wsj", "wall street journal"], "wsj.com"),
-        (&["the guardian", "guardian"], "theguardian.com"),
-        (&["bbc"], "bbc.com"),
-        (&["cnn"], "cnn.com"),
-        (&["forbes"], "forbes.com"),
-        (&["techcrunch"], "techcrunch.com"),
-        (&["the verge", "theverge"], "theverge.com"),
-        (&["wired"], "wired.com"),
-        (&["arstechnica", "ars technica"], "arstechnica.com"),
-
-        // Search Engines
-        (&["duckduckgo"], "duckduckgo.com"),
-        (&["bing"], "bing.com"),
-        (&["yahoo"], "yahoo.com"),
-        (&["ecosia"], "ecosia.org"),
-        (&["brave search"], "search.brave.com"),
-        (&["startpage"], "startpage.com"),
-        (&["kagi"], "kagi.com"),
-        (&["fast.com"], "fast.com"),
-        (&["speedtest"], "speedtest.net"),
-    ];
-
-    for (keywords, domain) in known_brands {
-        for kw in *keywords {
-            if lower.contains(kw) {
-                return Some((*domain).to_string());
-            }
-        }
+    if lower.starts_with("github") || lower.ends_with("github") {
+        return Some("github.com".to_string());
+    }
+    if lower.starts_with("youtube") || lower.ends_with("youtube") {
+        return Some("youtube.com".to_string());
+    }
+    if lower.starts_with("reddit") || lower.ends_with("reddit") || lower.starts_with("r/") {
+        return Some("reddit.com".to_string());
+    }
+    if lower.starts_with("google search") || lower.ends_with("google search") {
+        return Some("google.com".to_string());
+    }
+    if lower.starts_with("meet - ") || lower.starts_with("google meet") {
+        return Some("meet.google.com".to_string());
+    }
+    if lower.starts_with("gmail") || lower.contains(" - gmail") || lower.starts_with("inbox (") {
+        return Some("mail.google.com".to_string());
+    }
+    if lower.starts_with("supabase") || lower.ends_with("supabase") {
+        return Some("supabase.com".to_string());
+    }
+    if lower.starts_with("chatgpt") || lower.ends_with("chatgpt") {
+        return Some("chatgpt.com".to_string());
+    }
+    if lower.starts_with("claude") || lower.ends_with("claude") {
+        return Some("claude.ai".to_string());
+    }
+    if lower.starts_with("gemini") || lower.ends_with("gemini") {
+        return Some("gemini.google.com".to_string());
+    }
+    if lower.starts_with("perplexity") || lower.ends_with("perplexity") {
+        return Some("perplexity.ai".to_string());
+    }
+    if lower.starts_with("deepseek") || lower.ends_with("deepseek") {
+        return Some("deepseek.com".to_string());
     }
 
-    // 3. Split clean_title and raw_trimmed by common separators: " - ", " — ", " | ", " · ", " : ", " • "
-    for sep in [" - ", " — ", " | ", " · ", " : ", " • "] {
-        for part in clean_title.split(sep) {
-            let s = part.trim();
-            if let Some(d) = normalize_domain(s) {
-                return Some(d);
-            }
-        }
-        for part in raw_trimmed.split(sep) {
-            let s = part.trim();
-            if let Some(d) = normalize_domain(s) {
-                return Some(d);
-            }
-        }
-    }
-
-    // 4. Scan words / tokens in title
+    // 6. Scan words / tokens in title for explicit domain formats (e.g. "github.com", "docs.rs", "youtu.be")
     for word in clean_title.split_whitespace() {
         let cleaned = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '-');
         if let Some(d) = normalize_domain(cleaned) {
@@ -1585,6 +1613,43 @@ mod tests {
 
     #[test]
     fn test_domain_from_title() {
+        // GitHub repo with Supabase in the description/title must be github.com, NOT supabase.com!
+        assert_eq!(
+            domain_from_title("ghassanelgendy/chronos-minimal: Lightweight background screentime tracker with Supabase sync - Chromium"),
+            Some("github.com".to_string())
+        );
+        assert_eq!(
+            domain_from_title("Issues · supabase/supabase · GitHub - Chromium"),
+            Some("github.com".to_string())
+        );
+        assert_eq!(
+            domain_from_title("GitHub - supabase/supabase: The open source Firebase alternative - Brave"),
+            Some("github.com".to_string())
+        );
+
+        // YouTube video about Supabase must be youtube.com, NOT supabase.com!
+        assert_eq!(
+            domain_from_title("How to connect Next.js to Supabase in 5 minutes - YouTube - Google Chrome"),
+            Some("youtube.com".to_string())
+        );
+
+        // Actual Supabase dashboard
+        assert_eq!(
+            domain_from_title("Dashboard | Supabase - Chromium"),
+            Some("supabase.com".to_string())
+        );
+        assert_eq!(
+            domain_from_title("Supabase | The Open Source Firebase Alternative - Brave"),
+            Some("supabase.com".to_string())
+        );
+
+        // Google search about Supabase must be google.com
+        assert_eq!(
+            domain_from_title("supabase query error - Google Search - Google Chrome"),
+            Some("google.com".to_string())
+        );
+
+        // Standard web applications
         assert_eq!(domain_from_title("Gemini - Chromium"), Some("gemini.google.com".to_string()));
         assert_eq!(domain_from_title("Gemini — Google Chrome"), Some("gemini.google.com".to_string()));
         assert_eq!(domain_from_title("Gemini"), Some("gemini.google.com".to_string()));
