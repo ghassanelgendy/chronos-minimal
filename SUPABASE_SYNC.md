@@ -173,14 +173,14 @@ Use only these keys when passing or persisting settings for Supabase sync (e.g. 
 ```json
 {
   "EnableSupabaseSync": true,
-  "SupabaseUrl": "https://wxqmrercyutrrlnhlmus.supabase.co/functions/v1/upload-screentime-chronos",
-  "SupabaseAnonKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind4cW1yZXJjeXV0cnJsbmhsbXVzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAxNTU5NzIsImV4cCI6MjA4NTczMTk3Mn0.CWu0bOSorBwsacAd6XFwRYnyXh5dLndBJ3bOPdOOx2s",
-  "SupabaseUserId": "25ac03b0-bacc-4cf7-a230-bc63f989dd7a",
+  "SupabaseUrl": "https://your-project.supabase.co/functions/v1/upload-screentime-chronos",
+  "SupabaseAnonKey": "your-supabase-anon-key",
+  "SupabaseUserId": "your-supabase-user-uuid",
   "SupabaseUploadIntervalMinutes": 3
 }
 ```
 
-**Note:** If your Edge Function is not at `/functions/v1/upload-screentime`, the app currently appends that path to `SupabaseUrl`. So either set `SupabaseUrl` to the project base (e.g. `https://wxqmrercyutrrlnhlmus.supabase.co`) and use an Edge Function named `upload-screentime`, or change the app to use `SupabaseUrl` as the full function URL when it already contains the path.
+**Note:** If your Edge Function is not at `/functions/v1/upload-screentime`, the app currently appends that path to `SupabaseUrl`. So either set `SupabaseUrl` to the project base (e.g. `https://your-project.supabase.co`) and use an Edge Function named `upload-screentime`, or change the app to use `SupabaseUrl` as the full function URL when it already contains the path.
 
 ---
 

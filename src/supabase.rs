@@ -7,7 +7,15 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+#[cfg(target_os = "linux")]
+const PLATFORM: &str = "linux";
+#[cfg(windows)]
 const PLATFORM: &str = "windows";
+#[cfg(target_os = "macos")]
+const PLATFORM: &str = "macos";
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+const PLATFORM: &str = "other";
+
 const SOURCE: &str = "pc";
 const APP_LOCK_NAME: &str = "AppLock";
 
@@ -238,10 +246,49 @@ pub async fn upload_screentime_data(
     device_id: &str,
     upload_interval_minutes: u32,
 ) -> UploadResult {
-    if user_id.trim().is_empty() {
+    let clean_url = supabase_url.trim();
+    let clean_key = supabase_anon_key.trim();
+    let clean_uid = user_id.trim();
+    let clean_dev = device_id.trim();
+
+    if clean_url.is_empty() {
         return UploadResult {
             success: false,
-            error_message: Some("User ID is required".to_string()),
+            error_message: Some("Supabase URL is empty. Please enter your Supabase project URL in Cloud Sync settings.".to_string()),
+            apps_inserted: 0,
+            websites_inserted: 0,
+            total_apps: 0,
+            total_websites: 0,
+        };
+    }
+
+    if clean_key.is_empty() {
+        return UploadResult {
+            success: false,
+            error_message: Some("Supabase Anon Key is empty. Please enter your Supabase anon/public API key in Cloud Sync settings.".to_string()),
+            apps_inserted: 0,
+            websites_inserted: 0,
+            total_apps: 0,
+            total_websites: 0,
+        };
+    }
+
+    if clean_uid.is_empty() {
+        return UploadResult {
+            success: false,
+            error_message: Some("User ID is required. Please enter your User ID in Cloud Sync settings.".to_string()),
+            apps_inserted: 0,
+            websites_inserted: 0,
+            total_apps: 0,
+            total_websites: 0,
+        };
+    }
+
+    let url = build_upload_url(clean_url);
+    if reqwest::Url::parse(&url).is_err() {
+        return UploadResult {
+            success: false,
+            error_message: Some(format!("Invalid Supabase URL format: '{}'. Expected e.g. https://your-project.supabase.co", clean_url)),
             apps_inserted: 0,
             websites_inserted: 0,
             total_apps: 0,
@@ -268,12 +315,12 @@ pub async fn upload_screentime_data(
         }
     }
 
-    let body = build_payload(data, user_id, device_id, &cache);
+    let body = build_payload(data, clean_uid, clean_dev, &cache);
     let snapshot_count = body.get("snapshots").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
     if snapshot_count == 0 {
         return UploadResult {
             success: true,
-            error_message: None,
+            error_message: Some("No new screen time activity since last sync.".to_string()),
             apps_inserted: 0,
             websites_inserted: 0,
             total_apps: 0,
@@ -281,17 +328,23 @@ pub async fn upload_screentime_data(
         };
     }
 
-    let url = build_upload_url(supabase_url);
-
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
+        .timeout(std::time::Duration::from_secs(60))
         .build()
-        .unwrap();
+        .unwrap_or_default();
+
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Ok(val) = reqwest::header::HeaderValue::from_str(clean_key) {
+        headers.insert("apikey", val);
+    }
+    if let Ok(val) = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", clean_key)) {
+        headers.insert("Authorization", val);
+    }
+    headers.insert(reqwest::header::CONTENT_TYPE, reqwest::header::HeaderValue::from_static("application/json"));
+
     let res = client
         .post(&url)
-        .header("apikey", supabase_anon_key)
-        .header("Authorization", format!("Bearer {}", supabase_anon_key))
-        .header("Content-Type", "application/json")
+        .headers(headers)
         .body(body.to_string())
         .send()
         .await;
@@ -409,9 +462,15 @@ pub async fn upload_screentime_data(
 
 /// Build upload URL: if URL already contains /functions/, use as-is; else append /functions/v1/upload-screentime.
 fn build_upload_url(supabase_url: &str) -> String {
-    let base = supabase_url.trim_end_matches('/');
+    let trimmed = supabase_url.trim().trim_end_matches('/');
+    let base = if !trimmed.is_empty() && !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+        format!("https://{}", trimmed)
+    } else {
+        trimmed.to_string()
+    };
+
     if base.contains("/functions/") {
-        base.to_string()
+        base
     } else {
         format!("{}/functions/v1/upload-screentime", base)
     }
