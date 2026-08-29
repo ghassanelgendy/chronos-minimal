@@ -64,6 +64,24 @@ fn normalize_domain(input: &str) -> Option<String> {
     } else {
         trimmed
     };
+
+    if without_scheme.starts_with("localhost") {
+        let host_and_port = without_scheme
+            .split('/')
+            .next()
+            .unwrap_or(without_scheme)
+            .split('?')
+            .next()
+            .unwrap_or(without_scheme)
+            .split('#')
+            .next()
+            .unwrap_or(without_scheme)
+            .trim();
+        if host_and_port.starts_with("localhost") && !host_and_port.contains(' ') {
+            return Some(host_and_port.to_lowercase());
+        }
+    }
+
     let host_only = without_scheme
         .split('/')
         .next()
@@ -235,54 +253,266 @@ fn get_browser_url_via_uia(hwnd: windows::Win32::Foundation::HWND) -> Option<Str
     }
 }
 
-/// Extract domain from window title (e.g. "GitHub - Chrome" -> github.com).
-pub fn domain_from_title(title: &str) -> Option<String> {
+fn strip_browser_suffix(title: &str) -> &str {
     let t = title.trim();
-    if t.is_empty() {
+    let browser_suffixes = [
+        " - Google Chrome",
+        " — Google Chrome",
+        " | Google Chrome",
+        " - Chromium",
+        " — Chromium",
+        " | Chromium",
+        " - Mozilla Firefox",
+        " — Mozilla Firefox",
+        " | Mozilla Firefox",
+        " - Firefox",
+        " — Firefox",
+        " - Brave",
+        " — Brave",
+        " | Brave",
+        " - Microsoft​ Edge",
+        " - Microsoft Edge",
+        " — Microsoft Edge",
+        " - Opera",
+        " — Opera",
+        " - Vivaldi",
+        " — Vivaldi",
+        " - Zen Browser",
+        " — Zen Browser",
+        " - Tor Browser",
+        " — Tor Browser",
+        " - Arc",
+        " — Arc",
+        " - Safari",
+        " — Safari",
+        " - Waterfox",
+        " — Waterfox",
+        " - LibreWolf",
+        " — LibreWolf",
+        " - Floorp",
+        " — Floorp",
+        " - Web",
+        " — Web",
+        " - Epiphany",
+        " — Epiphany",
+        " - Yandex",
+        " — Yandex",
+    ];
+
+    for suffix in browser_suffixes {
+        if let Some(stripped) = t.strip_suffix(suffix) {
+            return stripped.trim();
+        }
+    }
+    t
+}
+
+pub fn is_internal_browser_page(clean_title: &str) -> bool {
+    let lower = clean_title.to_lowercase();
+    lower == "new tab"
+        || lower == "settings"
+        || lower == "downloads"
+        || lower == "extensions"
+        || lower == "bookmarks"
+        || lower == "history"
+        || lower == "about:blank"
+        || lower.starts_with("chrome://")
+        || lower.starts_with("edge://")
+        || lower.starts_with("brave://")
+        || lower.starts_with("about:")
+        || lower.starts_with("opera://")
+        || lower.starts_with("vivaldi://")
+}
+
+/// Extract domain from window title (e.g. "Gemini - Chromium" -> gemini.google.com, "GitHub - Chrome" -> github.com).
+pub fn domain_from_title(title: &str) -> Option<String> {
+    let raw_trimmed = title.trim();
+    if raw_trimmed.is_empty() {
         return None;
     }
 
-    // 1. Direct domain check
-    if let Some(d) = normalize_domain(t) {
+    let clean_title = strip_browser_suffix(raw_trimmed);
+
+    // If it's a blank or internal browser page (e.g. New Tab, Settings), it's not a website.
+    if is_internal_browser_page(clean_title) {
+        return None;
+    }
+
+    // 1. Direct domain check on the cleaned title or full title
+    if let Some(d) = normalize_domain(clean_title) {
+        return Some(d);
+    }
+    if let Some(d) = normalize_domain(raw_trimmed) {
         return Some(d);
     }
 
-    // 2. Common website brand names mapped to domain (prioritized over arbitrary substring splitting)
-    let lower = t.to_lowercase();
+    // 2. High-priority Brand / Keyword Dictionary
+    let lower = clean_title.to_lowercase();
+
     let known_brands: &[(&[&str], &str)] = &[
-        (&["youtube", "youtu.be"], "youtube.com"),
+        // AI & LLM Tools
+        (&["gemini"], "gemini.google.com"),
+        (&["chatgpt", "openai"], "chatgpt.com"),
+        (&["claude"], "claude.ai"),
+        (&["perplexity"], "perplexity.ai"),
+        (&["deepseek"], "deepseek.com"),
+        (&["copilot"], "copilot.microsoft.com"),
+        (&["grok", "x.ai"], "x.ai"),
+        (&["midjourney"], "midjourney.com"),
+        (&["mistral", "le chat"], "mistral.ai"),
+        (&["poe.com"], "poe.com"),
+        (&["huggingface", "hugging face"], "huggingface.co"),
+        (&["kaggle"], "kaggle.com"),
+        (&["colab", "google colab"], "colab.research.google.com"),
+
+        // Google Services
+        (&["google meet", "meet - "], "meet.google.com"),
+        (&["google docs", "docs.google"], "docs.google.com"),
+        (&["google drive", "drive.google", "my drive - google"], "drive.google.com"),
+        (&["google sheets", "sheets.google"], "sheets.google.com"),
+        (&["google slides", "slides.google"], "slides.google.com"),
+        (&["google mail", "gmail", "inbox ("], "mail.google.com"),
+        (&["google calendar", "calendar.google"], "calendar.google.com"),
+        (&["google maps", "maps.google"], "maps.google.com"),
+        (&["google photos", "photos.google"], "photos.google.com"),
+        (&["google translate", "translate.google"], "translate.google.com"),
+        (&["google cloud", "console.cloud.google"], "console.cloud.google.com"),
+        (&["google search", "google"], "google.com"),
+
+        // Dev & Code
         (&["github"], "github.com"),
         (&["gitlab"], "gitlab.com"),
-        (&["reddit"], "reddit.com"),
+        (&["bitbucket"], "bitbucket.org"),
         (&["stackoverflow", "stack overflow"], "stackoverflow.com"),
-        (&["google search", "google meet", "google docs", "google drive", "google mail", "gmail", "google sheets", "google slides"], "google.com"),
-        (&["chatgpt", "openai"], "chatgpt.com"),
-        (&["claude.ai", "anthropic"], "claude.ai"),
-        (&["gemini.google"], "gemini.google.com"),
-        (&["huggingface"], "huggingface.co"),
-        (&["kaggle"], "kaggle.com"),
+        (&["superuser", "super user"], "superuser.com"),
+        (&["serverfault", "server fault"], "serverfault.com"),
+        (&["stack exchange", "stackexchange"], "stackexchange.com"),
+        (&["hacker news", "news.ycombinator", "ycombinator"], "news.ycombinator.com"),
+        (&["product hunt", "producthunt"], "producthunt.com"),
+        (&["supabase"], "supabase.com"),
+        (&["vercel"], "vercel.com"),
+        (&["netlify"], "netlify.app"),
+        (&["aws", "amazon web services"], "aws.amazon.com"),
+        (&["azure", "portal.azure"], "portal.azure.com"),
+        (&["cloudflare"], "cloudflare.com"),
+        (&["digitalocean", "digital ocean"], "digitalocean.com"),
+        (&["heroku"], "heroku.com"),
+        (&["railway.app", "railway"], "railway.app"),
+        (&["render.com", "render dashboard"], "render.com"),
+        (&["fly.io"], "fly.io"),
+        (&["replit"], "replit.com"),
+        (&["codesandbox"], "codesandbox.io"),
+        (&["codepen"], "codepen.io"),
+        (&["jsfiddle"], "jsfiddle.net"),
+        (&["npm", "npmjs"], "npmjs.com"),
+        (&["crates.io"], "crates.io"),
+        (&["docs.rs"], "docs.rs"),
+        (&["pypi"], "pypi.org"),
+        (&["docker hub", "dockerhub"], "hub.docker.com"),
+        (&["postman"], "postman.com"),
+        (&["linear"], "linear.app"),
+        (&["jira", "atlassian"], "atlassian.net"),
+        (&["confluence"], "atlassian.net"),
+
+        // Productivity & Workspace
         (&["notion"], "notion.so"),
         (&["figma"], "figma.com"),
-        (&["linear"], "linear.app"),
-        (&["twitter", "x.com"], "x.com"),
+        (&["canva"], "canva.com"),
+        (&["miro"], "miro.com"),
+        (&["trello"], "trello.com"),
+        (&["asana"], "asana.com"),
+        (&["monday.com", "monday "], "monday.com"),
+        (&["clickup"], "clickup.com"),
+        (&["airtable"], "airtable.com"),
+        (&["basecamp"], "basecamp.com"),
+        (&["slack"], "slack.com"),
+        (&["discord"], "discord.com"),
+        (&["microsoft teams", "teams.microsoft"], "teams.microsoft.com"),
+        (&["zoom"], "zoom.us"),
+        (&["dropbox"], "dropbox.com"),
+        (&["evernote"], "evernote.com"),
+        (&["overleaf"], "overleaf.com"),
+
+        // Media & Streaming
+        (&["youtube music"], "music.youtube.com"),
+        (&["youtube studio"], "studio.youtube.com"),
+        (&["youtube", "youtu.be"], "youtube.com"),
+        (&["spotify"], "spotify.com"),
+        (&["soundcloud"], "soundcloud.com"),
+        (&["apple music"], "music.apple.com"),
+        (&["netflix"], "netflix.com"),
+        (&["twitch"], "twitch.tv"),
+        (&["prime video", "amazon prime"], "primevideo.com"),
+        (&["disney+", "disney plus"], "disneyplus.com"),
+        (&["hulu"], "hulu.com"),
+        (&["max.com", "hbo max"], "max.com"),
+        (&["crunchyroll"], "crunchyroll.com"),
+        (&["vimeo"], "vimeo.com"),
+        (&["imdb"], "imdb.com"),
+
+        // Social & Communication
+        (&["reddit", "r/"], "reddit.com"),
+        (&["twitter", "x /", "/ x", "x.com"], "x.com"),
         (&["linkedin"], "linkedin.com"),
         (&["facebook"], "facebook.com"),
         (&["instagram"], "instagram.com"),
+        (&["threads.net", "threads"], "threads.net"),
+        (&["tiktok"], "tiktok.com"),
+        (&["pinterest"], "pinterest.com"),
+        (&["snapchat"], "snapchat.com"),
         (&["whatsapp"], "web.whatsapp.com"),
-        (&["discord"], "discord.com"),
-        (&["slack"], "slack.com"),
-        (&["spotify"], "spotify.com"),
-        (&["netflix"], "netflix.com"),
-        (&["twitch"], "twitch.tv"),
+        (&["telegram"], "web.telegram.org"),
+        (&["mastodon"], "mastodon.social"),
+        (&["bluesky", "bsky"], "bsky.app"),
+        (&["tumblr"], "tumblr.com"),
+        (&["quora"], "quora.com"),
+
+        // Shopping & Finance
         (&["amazon"], "amazon.com"),
+        (&["ebay"], "ebay.com"),
+        (&["aliexpress"], "aliexpress.com"),
+        (&["walmart"], "walmart.com"),
+        (&["target"], "target.com"),
+        (&["etsy"], "etsy.com"),
+        (&["paypal"], "paypal.com"),
+        (&["stripe"], "stripe.com"),
+        (&["shopify"], "shopify.com"),
+        (&["binance"], "binance.com"),
+        (&["coinbase"], "coinbase.com"),
+        (&["tradingview"], "tradingview.com"),
+
+        // Reading, News & Reference
         (&["wikipedia"], "wikipedia.org"),
         (&["medium"], "medium.com"),
-        (&["supabase"], "supabase.com"),
-        (&["vercel"], "vercel.com"),
-        (&["hashcat"], "hashcat.net"),
+        (&["substack"], "substack.com"),
+        (&["dev.to"], "dev.to"),
+        (&["arxiv"], "arxiv.org"),
+        (&["researchgate"], "researchgate.net"),
+        (&["bloomberg"], "bloomberg.com"),
+        (&["reuters"], "reuters.com"),
+        (&["nytimes", "new york times"], "nytimes.com"),
+        (&["wsj", "wall street journal"], "wsj.com"),
+        (&["the guardian", "guardian"], "theguardian.com"),
+        (&["bbc"], "bbc.com"),
+        (&["cnn"], "cnn.com"),
+        (&["forbes"], "forbes.com"),
+        (&["techcrunch"], "techcrunch.com"),
+        (&["the verge", "theverge"], "theverge.com"),
+        (&["wired"], "wired.com"),
+        (&["arstechnica", "ars technica"], "arstechnica.com"),
+
+        // Search Engines
+        (&["duckduckgo"], "duckduckgo.com"),
+        (&["bing"], "bing.com"),
+        (&["yahoo"], "yahoo.com"),
+        (&["ecosia"], "ecosia.org"),
+        (&["brave search"], "search.brave.com"),
+        (&["startpage"], "startpage.com"),
+        (&["kagi"], "kagi.com"),
         (&["fast.com"], "fast.com"),
         (&["speedtest"], "speedtest.net"),
     ];
+
     for (keywords, domain) in known_brands {
         for kw in *keywords {
             if lower.contains(kw) {
@@ -291,9 +521,15 @@ pub fn domain_from_title(title: &str) -> Option<String> {
         }
     }
 
-    // 3. Split by common browser title separators: " - ", " — ", " | ", " · ", " : "
-    for sep in [" - ", " — ", " | ", " · ", " : "] {
-        for part in t.split(sep) {
+    // 3. Split clean_title and raw_trimmed by common separators: " - ", " — ", " | ", " · ", " : ", " • "
+    for sep in [" - ", " — ", " | ", " · ", " : ", " • "] {
+        for part in clean_title.split(sep) {
+            let s = part.trim();
+            if let Some(d) = normalize_domain(s) {
+                return Some(d);
+            }
+        }
+        for part in raw_trimmed.split(sep) {
             let s = part.trim();
             if let Some(d) = normalize_domain(s) {
                 return Some(d);
@@ -301,8 +537,8 @@ pub fn domain_from_title(title: &str) -> Option<String> {
         }
     }
 
-    // 4. Scan words/tokens in title for domain names (e.g. "github.com", "docs.rs", "youtu.be")
-    for word in t.split_whitespace() {
+    // 4. Scan words / tokens in title
+    for word in clean_title.split_whitespace() {
         let cleaned = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '-');
         if let Some(d) = normalize_domain(cleaned) {
             return Some(d);
@@ -316,15 +552,30 @@ pub fn domain_from_title(title: &str) -> Option<String> {
 pub fn is_browser_process(app_name: &str) -> bool {
     let a = app_name.to_lowercase();
     a.contains("chrome")
+        || a.contains("chromium")
         || a.contains("msedge")
+        || a.contains("edge")
         || a.contains("firefox")
         || a.contains("opera")
         || a.contains("brave")
-        || a == "edge"
+        || a.contains("vivaldi")
+        || a.contains("arc")
+        || a.contains("zen")
+        || a.contains("safari")
+        || a.contains("tor")
+        || a.contains("waterfox")
+        || a.contains("librewolf")
+        || a.contains("floorp")
+        || a.contains("epiphany")
         || a.contains("browser")
         || a.contains("navigator")
-        || a.contains("chromium")
-        || a.contains("zen")
+        || a.contains("yandex")
+        || a.contains("sidekick")
+        || a.contains("orion")
+        || a.contains("qutebrowser")
+        || a.contains("falkon")
+        || a.contains("ladybird")
+        || a.contains("mullvad")
 }
 
 #[cfg(windows)]
@@ -1334,10 +1585,21 @@ mod tests {
 
     #[test]
     fn test_domain_from_title() {
+        assert_eq!(domain_from_title("Gemini - Chromium"), Some("gemini.google.com".to_string()));
+        assert_eq!(domain_from_title("Gemini — Google Chrome"), Some("gemini.google.com".to_string()));
+        assert_eq!(domain_from_title("Gemini"), Some("gemini.google.com".to_string()));
         assert_eq!(domain_from_title("GitHub: Where the world builds software — Mozilla Firefox"), Some("github.com".to_string()));
         assert_eq!(domain_from_title("YouTube - Watch Videos - Google Chrome"), Some("youtube.com".to_string()));
         assert_eq!(domain_from_title("ChatGPT — Google Chrome"), Some("chatgpt.com".to_string()));
+        assert_eq!(domain_from_title("Claude - Anthropic - Brave"), Some("claude.ai".to_string()));
+        assert_eq!(domain_from_title("Perplexity - Chromium"), Some("perplexity.ai".to_string()));
+        assert_eq!(domain_from_title("DeepSeek - Chromium"), Some("deepseek.com".to_string()));
         assert_eq!(domain_from_title("erp.servixa-it.com - Dashboard — Mozilla Firefox"), Some("erp.servixa-it.com".to_string()));
+        assert_eq!(domain_from_title("https://my-app.vercel.app/demo - Chromium"), Some("my-app.vercel.app".to_string()));
+        assert_eq!(domain_from_title("localhost:3000 - Web App - Chromium"), Some("localhost:3000".to_string()));
+        // Ensure browser internal pages return None (so counted as browser app, not site)
+        assert_eq!(domain_from_title("New Tab - Chromium"), None);
+        assert_eq!(domain_from_title("Settings - Google Chrome"), None);
         // Ensure filename in title is not treated as website
         assert_eq!(domain_from_title("rockyou.txt - Text Editor"), None);
     }
