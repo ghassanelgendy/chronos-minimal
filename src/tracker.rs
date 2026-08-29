@@ -576,7 +576,39 @@ pub fn domain_from_title(title: &str) -> Option<String> {
     None
 }
 
-/// Check if process is typically a browser (for URL extraction from title).
+/// Like domain_from_title, but guarantees that ANY browser window is tracked as a website —
+/// even if the real domain cannot be identified. Falls back to the cleaned page title
+/// (browser suffix stripped) so time is NEVER silently counted as the browser app name.
+pub fn domain_from_browser_title(title: &str) -> Option<String> {
+    let raw_trimmed = title.trim();
+    if raw_trimmed.is_empty() {
+        return None;
+    }
+
+    let clean_title = strip_browser_suffix(raw_trimmed);
+
+    // Internal browser pages (New Tab, Settings…) should NOT be tracked as websites.
+    if is_internal_browser_page(clean_title) {
+        return None;
+    }
+
+    // Try to extract a real domain first.
+    if let Some(d) = domain_from_title(raw_trimmed) {
+        return Some(d);
+    }
+
+    // Fallback: cleaned page title as a label for unknown sites.
+    // e.g. "My Dashboard - Chromium" → "My Dashboard"
+    // e.g. "Checkout — Brave" → "Checkout"
+    let label = clean_title.trim();
+    if label.is_empty() {
+        return None;
+    }
+
+    Some(label.to_string())
+}
+
+
 pub fn is_browser_process(app_name: &str) -> bool {
     let a = app_name.to_lowercase();
     a.contains("chrome")
@@ -628,7 +660,7 @@ pub(crate) fn get_foreground_info() -> Option<CurrentActivity> {
         let app_name = app_name_from_path(&process_path);
         let is_browser = is_browser_process(&app_name);
         let domain = if is_browser {
-            get_browser_url(hwnd).or_else(|| domain_from_title(&window_title))
+            get_browser_url(hwnd).or_else(|| domain_from_browser_title(&window_title))
         } else {
             None
         };
@@ -1245,7 +1277,7 @@ fn get_x11_active_window() -> Option<CurrentActivity> {
 
     let is_browser = is_browser_process(&app_name);
     let domain = if is_browser {
-        domain_from_title(&window_title)
+        domain_from_browser_title(&window_title)
     } else {
         None
     };
@@ -1287,7 +1319,7 @@ pub(crate) fn get_foreground_info() -> Option<CurrentActivity> {
         };
         let is_browser = is_browser_process(&app_name);
         let domain = if is_browser {
-            domain_from_title(&title)
+            domain_from_browser_title(&title)
         } else {
             None
         };
@@ -1329,7 +1361,7 @@ pub(crate) fn get_foreground_info() -> Option<CurrentActivity> {
             }
             let is_browser = is_browser_process(&app_name);
             let domain = if is_browser {
-                domain_from_title(&title)
+                domain_from_browser_title(&title)
             } else {
                 None
             };
