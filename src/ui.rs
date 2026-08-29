@@ -272,16 +272,19 @@ impl eframe::App for ChronosApp {
 
         // Check if tray icon or background signal requested showing the dashboard window
         if self.show_dashboard_flag.swap(false, Ordering::SeqCst) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
 
-        // Intercept close button (X) and minimize to tray/indicator if configured
+        // Intercept close button (X): hide window completely from dock and keep running in AppIndicator
         if ctx.input(|i| i.viewport().close_requested()) {
             if self.close_to_tray {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            } else {
+                self.tracker_running.store(false, Ordering::SeqCst);
+                std::process::exit(0);
             }
         }
 
@@ -748,7 +751,8 @@ pub fn show_dashboard_window(
     let icon = load_app_icon();
 
     let mut viewport = egui::ViewportBuilder::default()
-        .with_inner_size([550.0, 500.0])
+        .with_inner_size([940.0, 680.0])
+        .with_min_inner_size([820.0, 560.0])
         .with_title("Chronos Screentime")
         .with_app_id("chronos-screentime")
         .with_visible(!start_minimized);
