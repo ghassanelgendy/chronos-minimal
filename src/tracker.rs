@@ -1605,6 +1605,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn test_clean_linux_app_names() {
         assert_eq!(clean_linux_app_name("org.gnome.Ptyxis"), "Terminal");
         assert_eq!(clean_linux_app_name("alacritty"), "Terminal");

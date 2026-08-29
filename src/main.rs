@@ -86,6 +86,76 @@ fn load_tray_icon_handle() -> Option<TrayHICON> {
     None
 }
 
+#[cfg(windows)]
+fn build_tray(
+    _data: Arc<std::sync::Mutex<crate::models::ScreenTimeData>>,
+    _settings: Arc<std::sync::Mutex<crate::models::AppSettings>>,
+    show_flag: Arc<AtomicBool>,
+    select_tab_index: Arc<std::sync::atomic::AtomicUsize>,
+    tracker_running: Arc<AtomicBool>,
+    tray_icon_handle: Option<TrayHICON>,
+) -> Option<tray_item::TrayItem> {
+    let show_flag_tray = Arc::clone(&show_flag);
+    let select_tab_index_tray = Arc::clone(&select_tab_index);
+
+    let tray = if let Some(h) = tray_icon_handle {
+        tray_item::TrayItem::new("Chronos Screentime", tray_item::IconSource::RawIcon(h))
+            .or_else(|_| tray_item::TrayItem::new("Chronos Screentime", tray_item::IconSource::Resource("1")))
+    } else {
+        tray_item::TrayItem::new("Chronos Screentime", tray_item::IconSource::Resource("1"))
+            .or_else(|_| tray_item::TrayItem::new("Chronos Screentime", tray_item::IconSource::Resource("")))
+    };
+
+    match tray {
+        Ok(mut t) => {
+            let show_flag_dashboard = Arc::clone(&show_flag_tray);
+            let select_tab_index_dashboard = Arc::clone(&select_tab_index_tray);
+            let _ = t.add_menu_item("Open Dashboard", move || {
+                select_tab_index_dashboard.store(0, Ordering::SeqCst);
+                show_flag_dashboard.store(true, Ordering::SeqCst);
+            });
+
+            let show_flag_prefs = Arc::clone(&show_flag_tray);
+            let select_tab_index_prefs = Arc::clone(&select_tab_index_tray);
+            let _ = t.add_menu_item("Preferences", move || {
+                select_tab_index_prefs.store(2, Ordering::SeqCst);
+                show_flag_prefs.store(true, Ordering::SeqCst);
+            });
+
+            let running_tray_exit = tracker_running.clone();
+            let _ = t.add_menu_item("Quit Chronos", move || {
+                running_tray_exit.store(false, Ordering::SeqCst);
+                std::process::exit(0);
+            });
+
+            Some(t)
+        }
+        Err(e) => {
+            eprintln!("[chronos] tray create failed: {}", e);
+            None
+        }
+    }
+}
+
+#[cfg(windows)]
+fn init_tray(
+    data: Arc<std::sync::Mutex<crate::models::ScreenTimeData>>,
+    settings: Arc<std::sync::Mutex<crate::models::AppSettings>>,
+    show_dashboard_flag: Arc<AtomicBool>,
+    select_tab_index: Arc<std::sync::atomic::AtomicUsize>,
+    tracker_running: Arc<AtomicBool>,
+) -> Option<tray_item::TrayItem> {
+    let tray_icon_handle = load_tray_icon_handle();
+    build_tray(
+        data,
+        settings,
+        show_dashboard_flag,
+        select_tab_index,
+        tracker_running,
+        tray_icon_handle,
+    )
+}
+
 #[cfg(target_os = "linux")]
 struct LinuxTray {
     data: Arc<std::sync::Mutex<crate::models::ScreenTimeData>>,
