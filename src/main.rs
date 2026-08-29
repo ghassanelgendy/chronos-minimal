@@ -1,8 +1,6 @@
-//! Chronos Screentime – lightweight Windows tracker with Supabase sync.
-//! Build: cargo build --release  → target/release/chronos-screentime.exe
+//! Chronos Screentime – lightweight cross-platform screentime tracker with Supabase sync.
 
-#![cfg(windows)]
-#![windows_subsystem = "windows"]
+#![allow(dead_code)]
 
 mod category;
 mod models;
@@ -12,21 +10,18 @@ mod tracker;
 mod ui;
 mod startup;
 
-use crate::models::{AppSettings, ScreenTimeData};
 use crate::storage::{load_settings, load_screen_time_data, save_screen_time_data};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use windows::core::PCWSTR;
-use windows::Win32::Foundation::HINSTANCE;
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::WindowsAndMessaging::{LoadImageW, LR_DEFAULTSIZE, LR_LOADFROMFILE, IMAGE_ICON};
 
 pub static STARTUP_TIME: std::sync::OnceLock<chrono::DateTime<chrono::Local>> = std::sync::OnceLock::new();
 
+#[cfg(windows)]
 type TrayHICON = isize;
 
 /// Resolve path to icon.ico (next to exe or in current dir).
+#[cfg(windows)]
 fn tray_icon_path() -> std::path::PathBuf {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -42,11 +37,13 @@ fn tray_icon_path() -> std::path::PathBuf {
     std::path::PathBuf::from("icon.ico")
 }
 
-/// Load icon for the tray: first from the embedded exe resource (numeric ID 1),
-/// then fall back to icon.ico on disk.
+#[cfg(windows)]
 fn load_tray_icon_handle() -> Option<TrayHICON> {
-    // Primary: load from embedded resource set by winres in build.rs.
-    // MAKEINTRESOURCEW(1) = pointer value 1, which tells the API to look up numeric ID 1.
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::HINSTANCE;
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::WindowsAndMessaging::{LoadImageW, LR_DEFAULTSIZE, LR_LOADFROMFILE, IMAGE_ICON};
+
     unsafe {
         if let Ok(hmod) = GetModuleHandleW(None) {
             let result = LoadImageW(
@@ -65,7 +62,6 @@ fn load_tray_icon_handle() -> Option<TrayHICON> {
         }
     }
 
-    // Fallback: load from icon.ico file next to exe or in cwd.
     let path = tray_icon_path();
     if !path.exists() {
         return None;
@@ -90,57 +86,152 @@ fn load_tray_icon_handle() -> Option<TrayHICON> {
     None
 }
 
-fn build_tray(
-    data: Arc<std::sync::Mutex<ScreenTimeData>>,
-    _settings: Arc<std::sync::Mutex<AppSettings>>,
-    show_flag: Arc<AtomicBool>,
-    select_tab_index: Arc<std::sync::atomic::AtomicUsize>,
+#[cfg(target_os = "linux")]
+struct LinuxTray {
+    data: Arc<std::sync::Mutex<crate::models::ScreenTimeData>>,
+    settings: Arc<std::sync::Mutex<crate::models::AppSettings>>,
+    tracking_enabled: Arc<AtomicBool>,
     tracker_running: Arc<AtomicBool>,
-    tray_icon_handle: Option<TrayHICON>,
-) -> Option<tray_item::TrayItem> {
-    // clones for menu callbacks
-    let data_today = Arc::clone(&data);
-    let show_flag_tray = Arc::clone(&show_flag);
-    let select_tab_index_tray = Arc::clone(&select_tab_index);
+    show_dashboard_flag: Arc<AtomicBool>,
+}
 
-    let tray = if let Some(h) = tray_icon_handle {
-        tray_item::TrayItem::new("Chronos Screentime", tray_item::IconSource::RawIcon(h))
-            .or_else(|_| tray_item::TrayItem::new("Chronos Screentime", tray_item::IconSource::Resource("1")))
-    } else {
-        tray_item::TrayItem::new("Chronos Screentime", tray_item::IconSource::Resource("1"))
-            .or_else(|_| tray_item::TrayItem::new("Chronos Screentime", tray_item::IconSource::Resource("")))
-    };
-
-    match tray {
-        Ok(mut t) => {
-            let show_flag_dashboard = Arc::clone(&show_flag_tray);
-            let select_tab_index_dashboard = Arc::clone(&select_tab_index_tray);
-            let _ = t.add_menu_item("Show Dashboard", move || {
-                select_tab_index_dashboard.store(0, Ordering::SeqCst);
-                show_flag_dashboard.store(true, Ordering::SeqCst);
-            });
-            let _ = t.add_menu_item("Today's summary", move || {
-                crate::ui::show_today_window(Arc::clone(&data_today));
-            });
-            let show_flag_prefs = Arc::clone(&show_flag_tray);
-            let select_tab_index_prefs = Arc::clone(&select_tab_index_tray);
-            let _ = t.add_menu_item("Preferences (Supabase sync)", move || {
-                select_tab_index_prefs.store(1, Ordering::SeqCst);
-                show_flag_prefs.store(true, Ordering::SeqCst);
-            });
-            let running_tray_exit = tracker_running.clone();
-            let _ = t.add_menu_item("Exit", move || {
-                running_tray_exit.store(false, Ordering::SeqCst);
-                std::process::exit(0);
-            });
-            Some(t)
-        }
-        Err(e) => {
-            eprintln!("[chronos] tray create failed: {}", e);
-            None
+#[cfg(target_os = "linux")]
+impl ksni::Tray for LinuxTray {
+    fn id(&self) -> String {
+        "chronos-screentime".to_string()
+    }
+    fn title(&self) -> String {
+        "Chronos Screentime".to_string()
+    }
+    fn status(&self) -> ksni::Status {
+        ksni::Status::Active
+    }
+    fn icon_name(&self) -> String {
+        "chronos-screentime".to_string()
+    }
+    fn category(&self) -> ksni::Category {
+        ksni::Category::ApplicationStatus
+    }
+    fn activate(&mut self, _x: i32, _y: i32) {
+        self.show_dashboard_flag.store(true, Ordering::SeqCst);
+    }
+    fn icon_theme_path(&self) -> String {
+        if let Some(base) = directories::BaseDirs::new() {
+            base.data_local_dir().join("icons").to_string_lossy().to_string()
+        } else {
+            String::new()
         }
     }
+    fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+        let bytes = include_bytes!("../icon-9.png");
+        let Ok(img) = image::load_from_memory_with_format(bytes, image::ImageFormat::Png) else {
+            return Vec::new();
+        };
+
+        let sizes: [u32; 7] = [16, 22, 24, 32, 48, 64, 256];
+        let mut icons = Vec::with_capacity(sizes.len());
+
+        for size in sizes {
+            let resized = if img.width() == size && img.height() == size {
+                img.to_rgba8()
+            } else {
+                image::imageops::resize(&img, size, size, image::imageops::FilterType::Triangle)
+            };
+
+            let mut argb_data = Vec::with_capacity((size * size * 4) as usize);
+            for pixel in resized.pixels() {
+                argb_data.push(pixel[3]); // Alpha
+                argb_data.push(pixel[0]); // Red
+                argb_data.push(pixel[1]); // Green
+                argb_data.push(pixel[2]); // Blue
+            }
+
+            icons.push(ksni::Icon {
+                width: size as i32,
+                height: size as i32,
+                data: argb_data,
+            });
+        }
+
+        icons
+    }
+    fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
+        use ksni::menu::*;
+        let is_tracking = self.tracking_enabled.load(Ordering::SeqCst);
+        let tracking_label = if is_tracking { "Pause Tracking" } else { "Resume Tracking" };
+
+        vec![
+            StandardItem {
+                label: "Chronos Screentime".to_string(),
+                enabled: false,
+                ..Default::default()
+            }
+            .into(),
+            MenuItem::Separator,
+            StandardItem {
+                label: "Open Dashboard".to_string(),
+                activate: Box::new(|this: &mut Self| {
+                    this.show_dashboard_flag.store(true, Ordering::SeqCst);
+                }),
+                ..Default::default()
+            }
+            .into(),
+            StandardItem {
+                label: tracking_label.to_string(),
+                activate: Box::new(|this: &mut Self| {
+                    let current = this.tracking_enabled.load(Ordering::SeqCst);
+                    this.tracking_enabled.store(!current, Ordering::SeqCst);
+                }),
+                ..Default::default()
+            }
+            .into(),
+            MenuItem::Separator,
+            StandardItem {
+                label: "Quit Chronos".to_string(),
+                activate: Box::new(|this: &mut Self| {
+                    this.tracker_running.store(false, Ordering::SeqCst);
+                    std::process::exit(0);
+                }),
+                ..Default::default()
+            }
+            .into(),
+        ]
+    }
 }
+
+#[cfg(target_os = "linux")]
+fn init_linux_tray(
+    data: Arc<std::sync::Mutex<crate::models::ScreenTimeData>>,
+    settings: Arc<std::sync::Mutex<crate::models::AppSettings>>,
+    tracking_enabled: Arc<AtomicBool>,
+    tracker_running: Arc<AtomicBool>,
+    show_dashboard_flag: Arc<AtomicBool>,
+) {
+    use ksni::TrayMethods;
+    let tray = LinuxTray {
+        data,
+        settings,
+        tracking_enabled,
+        tracker_running,
+        show_dashboard_flag,
+    };
+    std::thread::spawn(move || {
+        if let Ok(rt) = tokio::runtime::Runtime::new() {
+            rt.block_on(async move {
+                match tray.spawn().await {
+                    Ok(_handle) => {
+                        println!("[chronos] Linux AppIndicator tray registered successfully");
+                        std::future::pending::<()>().await;
+                    }
+                    Err(e) => {
+                        eprintln!("[chronos] Warning: Could not register AppIndicator tray: {:?}", e);
+                    }
+                }
+            });
+        }
+    });
+}
+
 fn main() {
     STARTUP_TIME.set(chrono::Local::now()).ok();
     let args: Vec<String> = std::env::args().collect();
@@ -148,8 +239,15 @@ fn main() {
         println!("Running sync test...");
         let settings = load_settings();
         let data = load_screen_time_data();
-        let device_id = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "PC".to_string());
-        println!("Settings: URL={}, Key_len={}, User={}", settings.supabase_url, settings.supabase_anon_key.len(), settings.supabase_user_id);
+        let device_id = std::env::var("COMPUTERNAME")
+            .or_else(|_| std::env::var("HOSTNAME"))
+            .unwrap_or_else(|_| "PC".to_string());
+        println!(
+            "Settings: URL={}, Key_len={}, User={}",
+            settings.supabase_url,
+            settings.supabase_anon_key.len(),
+            settings.supabase_user_id
+        );
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(crate::supabase::upload_screentime_data(
             &data,
@@ -159,21 +257,32 @@ fn main() {
             &device_id,
             0,
         ));
-        println!("Result: success={}, error={:?}, apps={}, webs={}", result.success, result.error_message, result.apps_inserted, result.websites_inserted);
+        println!(
+            "Result: success={}, error={:?}, apps={}, webs={}",
+            result.success, result.error_message, result.apps_inserted, result.websites_inserted
+        );
+        return;
+    }
+    if args.contains(&"--test-tracker".to_string()) {
+        println!("Testing live tracker for 5 seconds...");
+        for i in 1..=5 {
+            let idle = crate::tracker::get_idle_seconds();
+            let fg = crate::tracker::get_foreground_info();
+            println!("[Tick {}] Idle: {:?}s, Activity: {:?}", i, idle, fg);
+            std::thread::sleep(Duration::from_secs(1));
+        }
         return;
     }
 
-    if let Err(e) = native_windows_gui::init() {
-        // No GUI - show Win32 message box so user sees something
-        show_error_messagebox(&format!("Chronos failed to start: {}", e));
-        std::process::exit(1);
-    }
     let settings = Arc::new(std::sync::Mutex::new(load_settings()));
     let data = Arc::new(std::sync::Mutex::new(load_screen_time_data()));
     let tracking_enabled = Arc::new(AtomicBool::new(true));
     let tracker_running = Arc::new(AtomicBool::new(true));
 
-    // Ensure "Start with Windows" registry entry matches saved preference.
+    #[cfg(not(windows))]
+    crate::startup::ensure_icon_installed();
+
+    // Ensure autostart entry matches saved preference.
     {
         let desired_startup = settings.lock().unwrap().start_with_windows;
         if startup::is_run_at_startup_enabled() != desired_startup {
@@ -183,7 +292,7 @@ fn main() {
         }
     }
 
-    // Tracker thread: poll foreground window, accumulate time
+    // Tracker thread: poll active window, accumulate time
     let data_tracker = data.clone();
     let settings_tracker = settings.clone();
     let tracking_enabled_tracker = tracking_enabled.clone();
@@ -222,7 +331,9 @@ fn main() {
                 if !enabled || url.is_empty() || key.is_empty() || user_id.trim().is_empty() {
                     continue;
                 }
-                let device_id = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "PC".to_string());
+                let device_id = std::env::var("COMPUTERNAME")
+                    .or_else(|_| std::env::var("HOSTNAME"))
+                    .unwrap_or_else(|_| "PC".to_string());
                 let to_upload = data_upload.lock().unwrap().clone();
                 let _ = save_screen_time_data(&to_upload);
                 let result = crate::supabase::upload_screentime_data(
@@ -241,106 +352,39 @@ fn main() {
         });
     });
 
-    // Flag set by tray "Show Dashboard" → main loop reopens the window.
     let show_dashboard_flag = Arc::new(AtomicBool::new(false));
     let select_tab_index = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let tray_restore_flag = Arc::new(AtomicBool::new(true)); // true so tray initializes on boot
-    let tray_icon_handle = load_tray_icon_handle();
-    let tray_holder: Arc<std::sync::Mutex<Option<tray_item::TrayItem>>> =
-        Arc::new(std::sync::Mutex::new(None));
 
-    // Background thread keeps tray alive and recreates it on request (e.g. after Explorer restart).
-    {
-        let data_tray = Arc::clone(&data);
-        let settings_tray = Arc::clone(&settings);
-        let show_flag_tray = Arc::clone(&show_dashboard_flag);
-        let select_tab_index_tray = Arc::clone(&select_tab_index);
-        let running_tray = Arc::clone(&tracker_running);
-        let restore_flag = Arc::clone(&tray_restore_flag);
-        let tray_store = Arc::clone(&tray_holder);
-        std::thread::spawn(move || {
-            while running_tray.load(Ordering::SeqCst) {
-                let needs_restore = restore_flag.swap(false, Ordering::SeqCst);
-                let has_tray = { tray_store.lock().unwrap().is_some() };
-                if needs_restore || !has_tray {
-                    let mut guard = tray_store.lock().unwrap();
-                    *guard = build_tray(
-                        Arc::clone(&data_tray),
-                        Arc::clone(&settings_tray),
-                        Arc::clone(&show_flag_tray),
-                        Arc::clone(&select_tab_index_tray),
-                        Arc::clone(&running_tray),
-                        tray_icon_handle,
-                    );
-                }
-                std::thread::sleep(Duration::from_secs(1));
-            }
-        });
-    }
-    {
-        let mut guard = tray_holder.lock().unwrap();
-        if guard.is_none() {
-            *guard = build_tray(
-                Arc::clone(&data),
-                Arc::clone(&settings),
-                Arc::clone(&show_dashboard_flag),
-                Arc::clone(&select_tab_index),
-                Arc::clone(&tracker_running),
-                tray_icon_handle,
-            );
-        }
-        tray_restore_flag.store(false, Ordering::SeqCst);
-    }
+    #[cfg(windows)]
+    let _tray = init_tray(
+        Arc::clone(&data),
+        Arc::clone(&settings),
+        Arc::clone(&show_dashboard_flag),
+        Arc::clone(&select_tab_index),
+        Arc::clone(&tracker_running),
+    );
 
-    // Tray watcher will recreate icon on demand.
+    #[cfg(target_os = "linux")]
+    let _linux_tray = init_linux_tray(
+        Arc::clone(&data),
+        Arc::clone(&settings),
+        Arc::clone(&tracking_enabled),
+        Arc::clone(&tracker_running),
+        Arc::clone(&show_dashboard_flag),
+    );
 
-    // Show dashboard; reopen whenever the tray requests it.
-    // show_dashboard_window blocks on nwg::dispatch_thread_events() and returns
-    // when the user closes or minimises-to-tray the window.
-    let start_minimized = { settings.lock().unwrap().start_minimized_to_tray };
-    let mut first_cycle = true;
-    loop {
-        show_dashboard_flag.store(false, Ordering::SeqCst);
+    let start_minimized = args.contains(&"--minimized".to_string())
+        || settings.lock().unwrap().start_minimized_to_tray;
 
-        let tray_ready = { tray_holder.lock().unwrap().is_some() };
-        let skip_window = first_cycle && start_minimized && tray_ready;
-        first_cycle = false;
-
-        if !skip_window {
-            let tab_to_select = select_tab_index.swap(0, Ordering::SeqCst);
-            crate::ui::show_dashboard_window(
-                data.clone(),
-                settings.clone(),
-                tracking_enabled.clone(),
-                tracker_running.clone(),
-                Arc::clone(&tray_restore_flag),
-                Some(tab_to_select),
-            );
-        }
-        // Dashboard closed – spin until tray asks to reopen, or Exit is triggered.
-        loop {
-            if !tracker_running.load(Ordering::SeqCst) {
-                let to_save = data.lock().unwrap().clone();
-                let _ = save_screen_time_data(&to_save);
-                std::process::exit(0);
-            }
-            if show_dashboard_flag.load(Ordering::SeqCst) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(200));
-        }
-    }
-}
-
-/// Show error in a Win32 message box (works even if NWG fails).
-fn show_error_messagebox(text: &str) {
-    use windows::core::PCWSTR;
-    use windows::Win32::UI::WindowsAndMessaging::MessageBoxW;
-    use windows::Win32::UI::WindowsAndMessaging::MB_OK;
-    use std::os::windows::ffi::OsStrExt;
-    let msg: Vec<u16> = std::ffi::OsStr::new(text).encode_wide().chain(Some(0)).collect();
-    let title: Vec<u16> = std::ffi::OsStr::new("Chronos Screentime").encode_wide().chain(Some(0)).collect();
-    unsafe {
-        MessageBoxW(None, PCWSTR(msg.as_ptr()), PCWSTR(title.as_ptr()), MB_OK);
-    }
+    // Launch Dashboard window
+    let tab_to_select = select_tab_index.load(Ordering::SeqCst);
+    crate::ui::show_dashboard_window(
+        data.clone(),
+        settings.clone(),
+        tracking_enabled.clone(),
+        tracker_running.clone(),
+        Arc::clone(&show_dashboard_flag),
+        Some(tab_to_select),
+        start_minimized,
+    );
 }

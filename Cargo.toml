@@ -2,22 +2,9 @@
 name = "chronos-screentime"
 version = "0.1.0"
 edition = "2021"
-description = "Lightweight Windows screentime tracker with Supabase sync"
+description = "Lightweight cross-platform screentime tracker with Supabase sync"
 
 [dependencies]
-# Windows API
-windows = { version = "0.58", features = [
-  "Win32_Foundation",
-  "Win32_UI_Input_KeyboardAndMouse",
-  "Win32_UI_WindowsAndMessaging",
-  "Win32_UI_Accessibility",
-  "Win32_System_Com",
-  "Win32_System_Threading",
-  "Win32_System_ProcessStatus",
-  "Win32_System_SystemInformation",
-  "Win32_System_LibraryLoader",
-  "Win32_Storage_FileSystem",
-] }
 # Serialization & time
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -30,15 +17,36 @@ tokio = { version = "1", features = ["rt-multi-thread", "time", "sync"] }
 # Config & paths
 uuid = { version = "1.11", features = ["v4", "serde"] }
 directories = "5.0"
-winreg = "0.52"
 
-# System tray
+# Cross-platform GUI
+eframe = "0.28"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+  "Win32_Foundation",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Accessibility",
+  "Win32_System_Com",
+  "Win32_System_Threading",
+  "Win32_System_ProcessStatus",
+  "Win32_System_SystemInformation",
+  "Win32_System_LibraryLoader",
+  "Win32_Storage_FileSystem",
+] }
+winreg = "0.52"
+native-windows-gui = "1.0"
 tray-item = "0.10"
 
-# GUI for settings (Windows)
-native-windows-gui = "1.0"
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13", features = ["allow-unsafe-code", "screensaver"] }
+zbus = { version = "4", default-features = false, features = ["blocking", "tokio"] }
+libloading = "0.8"
+ksni = "0.3.6"
 
 [build-dependencies]
+[target.'cfg(windows)'.build-dependencies]
 winres = "0.1"
 
 [profile.release]
