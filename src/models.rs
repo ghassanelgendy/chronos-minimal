@@ -24,6 +24,12 @@ pub struct AppSettings {
     pub start_with_windows: bool,
     #[serde(default)]
     pub start_minimized_to_tray: bool,
+    #[serde(default = "default_true")]
+    pub close_to_tray: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_upload_interval() -> u32 {
@@ -45,6 +51,7 @@ impl Default for AppSettings {
             idle_threshold_seconds: 120,
             start_with_windows: false,
             start_minimized_to_tray: false,
+            close_to_tray: true,
         }
     }
 }
@@ -212,6 +219,70 @@ pub fn get_today_summary(data: &ScreenTimeData) -> (u64, Vec<TodayAppLine>) {
     (total_seconds, lines)
 }
 
+/// Get the total seconds, lines, and switch count for any specific date.
+pub fn get_day_summary_for_date(
+    data: &ScreenTimeData,
+    date: NaiveDate,
+) -> (u64, Vec<SummaryLine>, u32) {
+    use chrono::Datelike;
+    let dk = date_key(date);
+    let year = date.year().to_string();
+    let month = date.month().to_string();
+    let week = week_key(date);
+    let mut total_seconds = 0u64;
+    let mut lines = Vec::new();
+    let mut total_switches = 0u32;
+
+    if let Some(day) = data
+        .years
+        .get(&year)
+        .and_then(|y| y.months.get(&month))
+        .and_then(|m| m.weeks.get(&week))
+        .and_then(|w| w.days.get(&dk))
+    {
+        total_switches = day.total_switches;
+        for (_, app) in &day.apps {
+            if app.app_name.eq_ignore_ascii_case("AppLock") {
+                continue;
+            }
+            total_seconds += app.total_time_seconds;
+            lines.push(SummaryLine {
+                name: app.app_name.clone(),
+                total_seconds: app.total_time_seconds,
+                session_count: app.session_count as u64,
+                is_website: false,
+            });
+        }
+        for (_, web) in &day.websites {
+            total_seconds += web.total_time_seconds;
+            lines.push(SummaryLine {
+                name: web.domain.clone(),
+                total_seconds: web.total_time_seconds,
+                session_count: web.session_count as u64,
+                is_website: true,
+            });
+        }
+    }
+    lines.sort_by(|a, b| b.total_seconds.cmp(&a.total_seconds));
+    (total_seconds, lines, total_switches)
+}
+
+/// Get the 7 days (Sunday..=Saturday) of the week containing `anchor_date` and their total tracked seconds.
+pub fn get_week_days(data: &ScreenTimeData, anchor_date: NaiveDate) -> Vec<(NaiveDate, u64)> {
+    use chrono::Datelike;
+    let weekday = anchor_date.weekday();
+    let days_from_sunday = weekday.num_days_from_sunday();
+    let sunday = anchor_date - chrono::Duration::days(days_from_sunday as i64);
+
+    let mut result = Vec::with_capacity(7);
+    for i in 0..7 {
+        let d = sunday + chrono::Duration::days(i);
+        let (secs, _, _) = get_day_summary_for_date(data, d);
+        result.push((d, secs));
+    }
+    result
+}
+
 /// Format seconds as "Xh Ym Zs" for display.
 pub fn format_seconds_display(seconds: u64) -> String {
     let h = seconds / 3600;
@@ -278,15 +349,16 @@ fn in_period(date: NaiveDate, period: SummaryPeriod, now: NaiveDate) -> bool {
         SummaryPeriod::Today => date == now,
         SummaryPeriod::Yesterday => date == now - chrono::Duration::days(1),
         SummaryPeriod::ThisWeek => {
-            let a = date.iso_week();
-            let b = now.iso_week();
-            a.year() == b.year() && a.week() == b.week()
+            let days_from_sun = now.weekday().num_days_from_sunday();
+            let start_sun = now - chrono::Duration::days(days_from_sun as i64);
+            let end_sat = start_sun + chrono::Duration::days(6);
+            date >= start_sun && date <= end_sat
         }
         SummaryPeriod::LastWeek => {
-            let lw = now - chrono::Duration::weeks(1);
-            let a = date.iso_week();
-            let b = lw.iso_week();
-            a.year() == b.year() && a.week() == b.week()
+            let days_from_sun = now.weekday().num_days_from_sunday();
+            let start_sun = now - chrono::Duration::days(days_from_sun as i64) - chrono::Duration::weeks(1);
+            let end_sat = start_sun + chrono::Duration::days(6);
+            date >= start_sun && date <= end_sat
         }
         SummaryPeriod::ThisMonth => date.year() == now.year() && date.month() == now.month(),
     }

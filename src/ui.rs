@@ -1,955 +1,800 @@
-//! System tray, today summary, and Preferences window. SUPABASE_SYNC Sections 5, 6.
-
-#![cfg(windows)]
-
 use crate::models::{
-    AppSettings,
-    SummaryPeriod,
-    format_seconds_display,
-    get_today_summary,
-    summarize_period,
+    AppSettings, ScreenTimeData, format_seconds_display, get_day_summary_for_date,
+    get_week_days, summarize_period, SummaryPeriod,
 };
 use crate::storage::{
-    clear_all_data,
-    export_data_snapshot,
-    load_screen_time_data,
-    reset_app_data,
-    save_settings,
+    clear_all_data, export_data_snapshot, load_settings, save_settings,
 };
 use crate::startup;
 use crate::supabase;
-use crate::models::ScreenTimeData;
-use native_windows_gui as nwg;
-use std::cell::RefCell;
-use std::rc::Rc;
+use chrono::{Local, NaiveDate};
+use eframe::egui;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
-/// Resolve path to icon.ico (next to exe or in current dir).
-fn icon_path() -> std::path::PathBuf {
-    if std::path::Path::new("icon.ico").exists() {
-        return std::path::PathBuf::from("icon.ico");
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum Tab {
+    Activity,
+    CloudSync,
+    Preferences,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum ViewMode {
+    Day,
+    ThisWeek,
+    LastWeek,
+    ThisMonth,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum FilterMode {
+    All,
+    AppsOnly,
+    WebsitesOnly,
+}
+
+#[derive(Debug, Clone)]
+pub struct GnomeThemeConfig {
+    pub is_dark: bool,
+    pub is_whitesur: bool,
+    pub buttons_on_left: bool,
+    pub has_close: bool,
+    pub has_minimize: bool,
+    pub has_maximize: bool,
+    pub gtk_theme: String,
+    pub color_scheme: String,
+    pub button_layout: String,
+}
+
+impl Default for GnomeThemeConfig {
+    fn default() -> Self {
+        Self::detect()
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let p = dir.join("icon.ico");
-            if p.exists() {
-                return p;
+}
+
+impl GnomeThemeConfig {
+    pub fn detect() -> Self {
+        #[cfg(target_os = "linux")]
+        {
+            let gtk_theme = std::process::Command::new("gsettings")
+                .args(["get", "org.gnome.desktop.interface", "gtk-theme"])
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .unwrap_or_default()
+                .trim()
+                .trim_matches('\'')
+                .to_string();
+
+            let color_scheme = std::process::Command::new("gsettings")
+                .args(["get", "org.gnome.desktop.interface", "color-scheme"])
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .unwrap_or_default()
+                .trim()
+                .trim_matches('\'')
+                .to_string();
+
+            let button_layout = std::process::Command::new("gsettings")
+                .args(["get", "org.gnome.desktop.wm.preferences", "button-layout"])
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .unwrap_or_default()
+                .trim()
+                .trim_matches('\'')
+                .to_string();
+
+            let is_dark = color_scheme.contains("dark") || gtk_theme.to_lowercase().contains("dark");
+            let is_whitesur = gtk_theme.to_lowercase().contains("whitesur");
+
+            // Format of button_layout is "left_buttons:right_buttons" (e.g. "close,minimize,maximize:")
+            let (left_part, right_part) = match button_layout.split_once(':') {
+                Some((l, r)) => (l, r),
+                None => (button_layout.as_str(), ""),
+            };
+
+            let buttons_on_left = !left_part.is_empty();
+            let active_part = if buttons_on_left { left_part } else { right_part };
+
+            let has_close = active_part.contains("close");
+            let has_minimize = active_part.contains("minimize");
+            let has_maximize = active_part.contains("maximize");
+
+            Self {
+                is_dark,
+                is_whitesur,
+                buttons_on_left,
+                has_close,
+                has_minimize,
+                has_maximize,
+                gtk_theme,
+                color_scheme,
+                button_layout,
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Self {
+                is_dark: true,
+                is_whitesur: false,
+                buttons_on_left: false,
+                has_close: true,
+                has_minimize: true,
+                has_maximize: true,
+                gtk_theme: "Default".to_string(),
+                color_scheme: "dark".to_string(),
+                button_layout: ":minimize,maximize,close".to_string(),
             }
         }
     }
-    std::path::PathBuf::from("icon.ico")
 }
 
-#[cfg(windows)]
-fn get_idle_seconds() -> Option<u64> {
-    use windows::Win32::System::SystemInformation::GetTickCount64;
-    use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+pub struct ChronosApp {
+    pub data: Arc<std::sync::Mutex<ScreenTimeData>>,
+    pub settings: Arc<std::sync::Mutex<AppSettings>>,
+    pub tracking_enabled: Arc<AtomicBool>,
+    pub tracker_running: Arc<AtomicBool>,
+    pub show_dashboard_flag: Arc<AtomicBool>,
+    pub gnome_theme: GnomeThemeConfig,
+    pub selected_tab: Tab,
+    pub selected_date: NaiveDate,
+    pub view_mode: ViewMode,
+    pub filter_mode: FilterMode,
+    pub status_message: String,
+    pub supabase_url: String,
+    pub supabase_anon_key: String,
+    pub supabase_user_id: String,
+    pub upload_interval: u32,
+    pub idle_threshold: u32,
+    pub enable_sync: bool,
+    pub start_at_logon: bool,
+    pub start_minimized: bool,
+    pub close_to_tray: bool,
+    pub app_entry_installed: bool,
+}
 
-    unsafe {
-        let mut last_input = LASTINPUTINFO {
-            cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
-            dwTime: 0,
+impl ChronosApp {
+    pub fn new(
+        data: Arc<std::sync::Mutex<ScreenTimeData>>,
+        settings: Arc<std::sync::Mutex<AppSettings>>,
+        tracking_enabled: Arc<AtomicBool>,
+        tracker_running: Arc<AtomicBool>,
+        show_dashboard_flag: Arc<AtomicBool>,
+        initial_tab: Option<usize>,
+    ) -> Self {
+        let (url, key, uid, interval, idle, sync, logon, minimized, close_tray) = {
+            let s = settings.lock().unwrap();
+            (
+                s.supabase_url.clone(),
+                s.supabase_anon_key.clone(),
+                s.supabase_user_id.clone(),
+                s.supabase_upload_interval_minutes,
+                s.idle_threshold_seconds,
+                s.enable_supabase_sync,
+                s.start_with_windows,
+                s.start_minimized_to_tray,
+                s.close_to_tray,
+            )
         };
-        if !GetLastInputInfo(&mut last_input).as_bool() {
-            return None;
+
+        let selected_tab = match initial_tab {
+            Some(1) => Tab::CloudSync,
+            Some(2) => Tab::Preferences,
+            _ => Tab::Activity,
+        };
+
+        let today = Local::now().date_naive();
+        let gnome_theme = GnomeThemeConfig::detect();
+
+        Self {
+            data,
+            settings,
+            tracking_enabled,
+            tracker_running,
+            show_dashboard_flag,
+            gnome_theme,
+            selected_tab,
+            selected_date: today,
+            view_mode: ViewMode::Day,
+            filter_mode: FilterMode::All,
+            status_message: String::new(),
+            supabase_url: url,
+            supabase_anon_key: key,
+            supabase_user_id: uid,
+            upload_interval: interval,
+            idle_threshold: idle,
+            enable_sync: sync,
+            start_at_logon: logon,
+            start_minimized: minimized,
+            close_to_tray: close_tray,
+            app_entry_installed: startup::is_app_entry_installed(),
         }
-        let now_ms = GetTickCount64();
-        let idle_ms = now_ms.saturating_sub(last_input.dwTime as u64);
-        Some(idle_ms / 1000)
     }
 }
 
-/// Show the "Today's summary" dashboard (total time + per-app/site list). Blocks until closed.
-pub fn show_today_window(data: Arc<std::sync::Mutex<ScreenTimeData>>) {
-    let (total_seconds, lines) = get_today_summary(&data.lock().unwrap());
-    let total_text = format_seconds_display(total_seconds);
-    let list_text: String = lines
-        .iter()
-        .map(|l| format!("{} — {}", l.name, format_seconds_display(l.total_seconds)))
-        .collect::<Vec<_>>()
-        .join("\r\n");
+pub fn apply_custom_theme(ctx: &egui::Context, config: &GnomeThemeConfig) {
+    let mut visuals = if config.is_dark {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
 
-    let mut window = nwg::Window::default();
-    let mut icon = nwg::Icon::default();
-    let mut label_total = nwg::Label::default();
-    let mut label_header = nwg::Label::default();
-    let mut label_list = nwg::Label::default();
-    let mut layout = nwg::GridLayout::default();
+    if config.is_whitesur || config.is_dark {
+        // macOS / WhiteSur-Dark inspired theme palette with sleek dark background
+        visuals.panel_fill = egui::Color32::from_rgb(26, 26, 29);
+        visuals.window_fill = egui::Color32::from_rgb(32, 32, 36);
+        visuals.faint_bg_color = egui::Color32::from_rgb(22, 22, 24);
+        visuals.extreme_bg_color = egui::Color32::from_rgb(16, 16, 18);
 
-    let icon_path = icon_path();
-    let icon_loaded = icon_path.exists()
-        && nwg::Icon::builder()
-            .source_file(Some(icon_path.to_str().unwrap_or("icon.ico")))
-            .strict(false)
-            .build(&mut icon)
-            .is_ok();
+        visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(34, 34, 38);
+        visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(48, 48, 54));
+        visuals.widgets.noninteractive.rounding = egui::Rounding::same(8.0);
 
-    let mut win_builder = nwg::Window::builder()
-        .size((400, 420))
-        .position((350, 250))
-        .title("Chronos – Today");
-    if icon_loaded {
-        win_builder = win_builder.icon(Some(&icon));
+        visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(42, 42, 46);
+        visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(56, 56, 62));
+        visuals.widgets.inactive.rounding = egui::Rounding::same(8.0);
+
+        visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(58, 58, 64);
+        visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(80, 80, 88));
+        visuals.widgets.hovered.rounding = egui::Rounding::same(8.0);
+
+        visuals.widgets.active.bg_fill = egui::Color32::from_rgb(0, 122, 255);
+        visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0, 100, 220));
+        visuals.widgets.active.rounding = egui::Rounding::same(8.0);
+
+        visuals.selection.bg_fill = egui::Color32::from_rgb(0, 122, 255);
+        visuals.window_rounding = egui::Rounding::same(12.0);
+    } else {
+        visuals.panel_fill = egui::Color32::from_rgb(245, 245, 247);
+        visuals.window_fill = egui::Color32::from_rgb(255, 255, 255);
+        visuals.widgets.inactive.rounding = egui::Rounding::same(8.0);
+        visuals.widgets.hovered.rounding = egui::Rounding::same(8.0);
+        visuals.widgets.active.rounding = egui::Rounding::same(8.0);
+        visuals.selection.bg_fill = egui::Color32::from_rgb(0, 122, 255);
+        visuals.window_rounding = egui::Rounding::same(12.0);
     }
-    win_builder
-        .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE)
-        .build(&mut window)
-        .expect("today window");
 
-    nwg::Label::builder()
-        .text(&format!("Total today: {}", total_text))
-        .parent(&window)
-        .build(&mut label_total)
-        .expect("today total label");
+    ctx.set_visuals(visuals);
+}
 
-    nwg::Label::builder()
-        .text("By app / site")
-        .parent(&window)
-        .build(&mut label_header)
-        .expect("today header label");
+impl eframe::App for ChronosApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        ctx.request_repaint_after(std::time::Duration::from_secs(1));
 
-    let list_content = if list_text.is_empty() {
-        "No activity yet today.".to_string()
-    } else {
-        list_text
-    };
-    nwg::Label::builder()
-        .text(&list_content)
-        .parent(&window)
-        .build(&mut label_list)
-        .expect("today list label");
+        // Apply detected system theme
+        apply_custom_theme(ctx, &self.gnome_theme);
 
-    nwg::GridLayout::builder()
-        .parent(&window)
-        .spacing(10)
-        .child_item(nwg::GridLayoutItem::new(&label_total, 0, 0, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&label_header, 0, 1, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&label_list, 0, 2, 1, 1))
-        .build(&mut layout)
-        .expect("today layout");
+        let is_focused = ctx.input(|i| i.focused);
+        crate::tracker::IS_CHRONOS_FOCUSED.store(is_focused, Ordering::SeqCst);
 
-    let window_handle = window.handle.clone();
-    nwg::full_bind_event_handler(&window_handle, move |evt, _evt_data, handle| {
-        if evt == nwg::Event::OnWindowClose && handle == window_handle {
-            nwg::stop_thread_dispatch();
+        // Check if tray icon or background signal requested showing the dashboard window
+        if self.show_dashboard_flag.swap(false, Ordering::SeqCst) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
-    });
 
-    nwg::dispatch_thread_events();
+        // Intercept close button (X) and minimize to tray/indicator if configured
+        if ctx.input(|i| i.viewport().close_requested()) {
+            if self.close_to_tray {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            }
+        }
+
+        egui::TopBottomPanel::top("header_panel").show(ctx, |ui| {
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.heading("⏱ Chronos Screentime");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let is_tracking = self.tracking_enabled.load(Ordering::SeqCst);
+                    let (btn_text, btn_color) = if is_tracking {
+                        ("⏸ Pause Tracking", egui::Color32::from_rgb(180, 48, 48))
+                    } else {
+                        ("▶ Resume Tracking", egui::Color32::from_rgb(36, 140, 36))
+                    };
+                    if ui.add(egui::Button::new(btn_text).fill(btn_color)).clicked() {
+                        self.tracking_enabled.store(!is_tracking, Ordering::SeqCst);
+                    }
+                });
+            });
+
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.selected_tab, Tab::Activity, "📊 Activity");
+                ui.selectable_value(&mut self.selected_tab, Tab::CloudSync, "☁ Cloud Sync");
+                ui.selectable_value(&mut self.selected_tab, Tab::Preferences, "⚙ Preferences");
+            });
+            ui.add_space(4.0);
+        });
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            match self.selected_tab {
+                Tab::Activity => self.show_activity_tab(ui),
+                Tab::CloudSync => self.show_cloud_sync_tab(ui),
+                Tab::Preferences => self.show_preferences_tab(ui),
+            }
+
+            if !self.status_message.is_empty() {
+                ui.add_space(8.0);
+                ui.separator();
+                ui.label(egui::RichText::new(&self.status_message).italics().color(egui::Color32::GRAY));
+            }
+        });
+    }
 }
 
-fn refresh_dashboard_view(
-    data: &Arc<std::sync::Mutex<ScreenTimeData>>,
-    settings: &Arc<std::sync::Mutex<AppSettings>>,
-    total_label: &nwg::Label,
-    tracking_label: &nwg::Label,
-    stats_box: &nwg::TextBox,
-    period: SummaryPeriod,
-    websites_only: bool,
-    tracking_enabled: bool,
-) {
-    let (totals, lines) = {
-        let guard = data.lock().unwrap();
-        summarize_period(&guard, period, websites_only)
-    };
+impl ChronosApp {
+    fn show_activity_tab(&mut self, ui: &mut egui::Ui) {
+        let today = Local::now().date_naive();
 
-    let idle_now = get_idle_seconds().unwrap_or(0);
-    let idle_threshold = {
-        let s = settings.lock().unwrap();
-        s.idle_threshold_seconds_clamped() as u64
-    };
-    let idle_state = if idle_now >= idle_threshold {
-        "Idle"
-    } else {
-        "Active"
-    };
-    tracking_label.set_text(&format!(
-        "Tracking: {} | Idle: {}s / {}s ({})",
-        if tracking_enabled { "Running" } else { "Stopped" },
-        idle_now,
-        idle_threshold,
-        idle_state
-    ));
+        // ── Period / Mode Selector & Date Navigation ─────────────────────────
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("View:").strong());
+            ui.selectable_value(&mut self.view_mode, ViewMode::Day, "📅 Day");
+            ui.selectable_value(&mut self.view_mode, ViewMode::ThisWeek, "📊 This Week");
+            ui.selectable_value(&mut self.view_mode, ViewMode::LastWeek, "⏮ Last Week");
+            ui.selectable_value(&mut self.view_mode, ViewMode::ThisMonth, "📆 This Month");
 
-    total_label.set_text(&format!(
-        "{} | Total: {} | Apps: {} | Switches: {}",
-        period.label(),
-        format_seconds_display(totals.total_seconds),
-        totals.total_apps,
-        totals.total_switches
-    ));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Today").clicked() {
+                    self.selected_date = today;
+                    self.view_mode = ViewMode::Day;
+                }
+                if ui.button("▶").clicked() {
+                    self.selected_date += chrono::Duration::days(1);
+                    self.view_mode = ViewMode::Day;
+                }
+                if ui.button("◀").clicked() {
+                    self.selected_date -= chrono::Duration::days(1);
+                    self.view_mode = ViewMode::Day;
+                }
+            });
+        });
 
-    let lines_text = if lines.is_empty() {
-        "No tracked activity yet today.".to_string()
-    } else {
-        lines
-            .iter()
-            .take(12)
-            .map(|l| {
-                let kind = if l.is_website { "Web" } else { "App" };
-                format!(
-                    "[{}] {} - {} (sessions: {})",
-                    kind,
-                    l.name,
-                    format_seconds_display(l.total_seconds),
-                    l.session_count
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\r\n")
-    };
-    stats_box.set_text(&lines_text);
+        ui.add_space(4.0);
+
+        // ── Interactive Days of the Week Navigation Bar ───────────────────────
+        let data_guard = self.data.lock().unwrap();
+        let week_days = get_week_days(&data_guard, self.selected_date);
+
+        ui.group(|ui| {
+            ui.horizontal(|ui| {
+                if ui.small_button("« Prev Week").clicked() {
+                    self.selected_date -= chrono::Duration::weeks(1);
+                    self.view_mode = ViewMode::Day;
+                }
+
+                let day_names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+                for (idx, (d, total_secs)) in week_days.iter().enumerate() {
+                    let is_selected = self.view_mode == ViewMode::Day && *d == self.selected_date;
+                    let is_today = *d == today;
+                    let day_label = format!(
+                        "{}\n{} ({})",
+                        day_names.get(idx).unwrap_or(&""),
+                        d.format("%d"),
+                        if *total_secs > 0 { format_seconds_display(*total_secs) } else { "-".to_string() }
+                    );
+
+                    let mut btn = egui::Button::new(
+                        egui::RichText::new(&day_label).size(11.0).strong()
+                    );
+                    if is_selected {
+                        btn = btn.fill(egui::Color32::from_rgb(0, 110, 220));
+                    } else if is_today {
+                        btn = btn.fill(egui::Color32::from_rgb(40, 80, 120));
+                    }
+
+                    if ui.add_sized([56.0, 36.0], btn).clicked() {
+                        self.selected_date = *d;
+                        self.view_mode = ViewMode::Day;
+                    }
+                }
+
+                if ui.small_button("Next Week »").clicked() {
+                    self.selected_date += chrono::Duration::weeks(1);
+                    self.view_mode = ViewMode::Day;
+                }
+            });
+        });
+
+        ui.add_space(6.0);
+
+        // ── Calculate Totals & Lines for selected View Mode ───────────────────
+        let (period_title, total_seconds, total_switches, _total_apps, mut lines) = match self.view_mode {
+            ViewMode::Day => {
+                let (secs, lines, switches) = get_day_summary_for_date(&data_guard, self.selected_date);
+                let title = if self.selected_date == today {
+                    format!("Today ({})", self.selected_date.format("%A, %b %d, %Y"))
+                } else if self.selected_date == today - chrono::Duration::days(1) {
+                    format!("Yesterday ({})", self.selected_date.format("%A, %b %d, %Y"))
+                } else {
+                    self.selected_date.format("%A, %b %d, %Y").to_string()
+                };
+                let apps_count = lines.len() as u32;
+                (title, secs, switches as u64, apps_count, lines)
+            }
+            ViewMode::ThisWeek => {
+                let (totals, lines) = summarize_period(&data_guard, SummaryPeriod::ThisWeek, false);
+                ("This Week".to_string(), totals.total_seconds, totals.total_switches, totals.total_apps, lines)
+            }
+            ViewMode::LastWeek => {
+                let (totals, lines) = summarize_period(&data_guard, SummaryPeriod::LastWeek, false);
+                ("Last Week".to_string(), totals.total_seconds, totals.total_switches, totals.total_apps, lines)
+            }
+            ViewMode::ThisMonth => {
+                let (totals, lines) = summarize_period(&data_guard, SummaryPeriod::ThisMonth, false);
+                ("This Month".to_string(), totals.total_seconds, totals.total_switches, totals.total_apps, lines)
+            }
+        };
+
+        // Filter lines based on filter_mode
+        match self.filter_mode {
+            FilterMode::All => {}
+            FilterMode::AppsOnly => {
+                lines.retain(|l| !l.is_website);
+            }
+            FilterMode::WebsitesOnly => {
+                lines.retain(|l| l.is_website);
+            }
+        }
+
+        // ── Summary Card ─────────────────────────────────────────────────────
+        ui.group(|ui| {
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(egui::RichText::new(&period_title).size(13.0).color(egui::Color32::GRAY));
+                    ui.label(
+                        egui::RichText::new(format_seconds_display(total_seconds))
+                            .size(20.0)
+                            .strong()
+                            .color(egui::Color32::from_rgb(0, 160, 255)),
+                    );
+                });
+
+                ui.add_space(24.0);
+                ui.separator();
+                ui.add_space(12.0);
+
+                ui.vertical(|ui| {
+                    ui.label(egui::RichText::new("Switches").size(12.0).color(egui::Color32::GRAY));
+                    ui.label(egui::RichText::new(format!("{}", total_switches)).size(16.0).strong());
+                });
+
+                ui.add_space(16.0);
+                ui.vertical(|ui| {
+                    ui.label(egui::RichText::new("Items Tracked").size(12.0).color(egui::Color32::GRAY));
+                    ui.label(egui::RichText::new(format!("{}", lines.len())).size(16.0).strong());
+                });
+            });
+        });
+
+        ui.add_space(8.0);
+
+        // ── Filter Controls & Ranked List ────────────────────────────────────
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Filter:").strong());
+            ui.selectable_value(&mut self.filter_mode, FilterMode::All, "All Items");
+            ui.selectable_value(&mut self.filter_mode, FilterMode::AppsOnly, "📱 Applications");
+            ui.selectable_value(&mut self.filter_mode, FilterMode::WebsitesOnly, "🌐 Websites");
+        });
+
+        ui.separator();
+
+        if lines.is_empty() {
+            ui.add_space(12.0);
+            ui.label(egui::RichText::new("No activity recorded for this period.").italics());
+        } else {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                egui::Grid::new("activity_grid")
+                    .striped(true)
+                    .min_col_width(120.0)
+                    .spacing([12.0, 6.0])
+                    .show(ui, |ui| {
+                        ui.label(egui::RichText::new("#").strong());
+                        ui.label(egui::RichText::new("Item Name").strong());
+                        ui.label(egui::RichText::new("Type").strong());
+                        ui.label(egui::RichText::new("Sessions").strong());
+                        ui.label(egui::RichText::new("Duration").strong());
+                        ui.label(egui::RichText::new("Share").strong());
+                        ui.end_row();
+
+                        let max_secs = if total_seconds > 0 { total_seconds as f32 } else { 1.0 };
+
+                        for (idx, item) in lines.iter().enumerate() {
+                            ui.label(format!("{}", idx + 1));
+                            let icon_prefix = if item.is_website { "🌐 " } else { "📱 " };
+                            ui.label(format!("{}{}", icon_prefix, item.name));
+                            ui.label(if item.is_website { "Website" } else { "Application" });
+                            ui.label(format!("{}", item.session_count));
+                            ui.label(format_seconds_display(item.total_seconds));
+
+                            let pct = (item.total_seconds as f32 / max_secs).clamp(0.0, 1.0);
+                            ui.add(egui::ProgressBar::new(pct).show_percentage());
+                            ui.end_row();
+                        }
+                    });
+            });
+        }
+    }
+
+    fn show_cloud_sync_tab(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(8.0);
+        ui.heading("Supabase Cloud Sync Settings");
+        ui.separator();
+
+        let mut changed = false;
+        if ui.checkbox(&mut self.enable_sync, "Enable Supabase Sync").changed() {
+            changed = true;
+        }
+
+        ui.add_space(8.0);
+        egui::Grid::new("sync_settings_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+            ui.label("Supabase API URL:");
+            if ui.text_edit_singleline(&mut self.supabase_url).changed() {
+                changed = true;
+            }
+            ui.end_row();
+
+            ui.label("Anon Client Key:");
+            if ui.add(egui::TextEdit::singleline(&mut self.supabase_anon_key).password(true)).changed() {
+                changed = true;
+            }
+            ui.end_row();
+
+            ui.label("User Identifier:");
+            if ui.text_edit_singleline(&mut self.supabase_user_id).changed() {
+                changed = true;
+            }
+            ui.end_row();
+
+            ui.label("Sync Interval (minutes):");
+            if ui.add(egui::DragValue::new(&mut self.upload_interval).range(1..=10080)).changed() {
+                changed = true;
+            }
+            ui.end_row();
+        });
+
+        if changed {
+            let mut s = self.settings.lock().unwrap();
+            s.enable_supabase_sync = self.enable_sync;
+            s.supabase_url = self.supabase_url.clone();
+            s.supabase_anon_key = self.supabase_anon_key.clone();
+            s.supabase_user_id = self.supabase_user_id.clone();
+            s.supabase_upload_interval_minutes = self.upload_interval;
+            save_settings(&s);
+        }
+
+        ui.add_space(16.0);
+        ui.horizontal(|ui| {
+            if ui.button("⚡ Test Sync / Upload Now").clicked() {
+                self.status_message = "Testing Supabase connection...".to_string();
+                let url = self.supabase_url.clone();
+                let key = self.supabase_anon_key.clone();
+                let uid = self.supabase_user_id.clone();
+                let data = self.data.lock().unwrap().clone();
+                let device_id = std::env::var("COMPUTERNAME")
+                    .or_else(|_| std::env::var("HOSTNAME"))
+                    .unwrap_or_else(|_| "Linux-PC".to_string());
+
+                let rt = tokio::runtime::Runtime::new();
+                if let Ok(rt) = rt {
+                    let result = rt.block_on(supabase::upload_screentime_data(
+                        &data, &url, &key, &uid, &device_id, 0,
+                    ));
+                    if result.success {
+                        self.status_message = format!(
+                            "Success! Uploaded {} app logs, {} website logs.",
+                            result.apps_inserted, result.websites_inserted
+                        );
+                    } else {
+                        self.status_message = format!(
+                            "Upload failed: {}",
+                            result.error_message.unwrap_or_else(|| "Unknown error".to_string())
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    fn show_preferences_tab(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(8.0);
+        ui.heading("Application Preferences");
+        ui.separator();
+
+        let mut changed = false;
+
+        // ── System integration ───────────────────────────────────────────────
+        ui.label(egui::RichText::new("System Integration").strong());
+        ui.add_space(4.0);
+
+        if ui.checkbox(&mut self.start_at_logon, "Start Chronos automatically at system logon").changed() {
+            changed = true;
+            if let Err(e) = startup::set_run_at_startup(self.start_at_logon) {
+                self.status_message = format!("Failed setting autostart: {}", e);
+            } else {
+                self.status_message = format!("Autostart set to {}", self.start_at_logon);
+            }
+        }
+
+        // App-drawer toggle (Linux / GNOME app launcher integration)
+        if ui.checkbox(&mut self.app_entry_installed, "Show in application launcher (app drawer)").changed() {
+            if self.app_entry_installed {
+                match startup::install_app_entry() {
+                    Ok(()) => {
+                        self.status_message =
+                            "Chronos added to app drawer. You may need to log out and back in, or run \
+                             'update-desktop-database ~/.local/share/applications' to see it immediately."
+                            .to_string();
+                    }
+                    Err(e) => {
+                        self.app_entry_installed = false;
+                        self.status_message = format!("Failed installing app entry: {}", e);
+                    }
+                }
+            } else {
+                match startup::uninstall_app_entry() {
+                    Ok(()) => {
+                        self.status_message = "Chronos removed from app drawer.".to_string();
+                    }
+                    Err(e) => {
+                        self.app_entry_installed = true;
+                        self.status_message = format!("Failed removing app entry: {}", e);
+                    }
+                }
+            }
+        }
+        ui.label(
+            egui::RichText::new(
+                "Installs a .desktop entry + icon so Chronos appears in GNOME / KDE app launchers.",
+            )
+            .small()
+            .italics(),
+        );
+
+        ui.add_space(4.0);
+        if ui.checkbox(&mut self.close_to_tray, "Minimize to AppIndicator / System Tray on window close").changed() {
+            changed = true;
+        }
+
+        ui.add_space(4.0);
+        if ui.checkbox(&mut self.start_minimized, "Start minimized to AppIndicator / System Tray").changed() {
+            changed = true;
+        }
+
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            ui.label("Idle Inactivity Threshold (seconds):");
+            if ui.add(egui::DragValue::new(&mut self.idle_threshold).range(10..=3600)).changed() {
+                changed = true;
+            }
+        });
+        ui.label(egui::RichText::new("Pauses tracking automatically when no keyboard/mouse input is detected.").small().italics());
+
+        if changed {
+            let mut s = self.settings.lock().unwrap();
+            s.start_with_windows = self.start_at_logon;
+            s.start_minimized_to_tray = self.start_minimized;
+            s.close_to_tray = self.close_to_tray;
+            s.idle_threshold_seconds = self.idle_threshold;
+            save_settings(&s);
+        }
+
+        ui.add_space(16.0);
+        ui.heading("🎨 System Theme Integration");
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label("GTK Theme:");
+            ui.label(egui::RichText::new(&self.gnome_theme.gtk_theme).strong().color(egui::Color32::from_rgb(0, 150, 255)));
+        });
+        ui.horizontal(|ui| {
+            ui.label("Color Scheme:");
+            ui.label(egui::RichText::new(if self.gnome_theme.is_dark { "Dark (prefer-dark)" } else { "Light (prefer-light)" }).strong());
+        });
+        ui.horizontal(|ui| {
+            ui.label("Window Button Layout:");
+            ui.label(egui::RichText::new(if self.gnome_theme.buttons_on_left { "Left (macOS / WhiteSur Traffic Lights)" } else { "Right (Standard Controls)" }).strong());
+        });
+
+        ui.add_space(20.0);
+        ui.heading("Data & Export Management");
+        ui.separator();
+
+        ui.horizontal(|ui| {
+            if ui.button("📥 Export Data Snapshot").clicked() {
+                let snapshot = self.data.lock().unwrap().clone();
+                match export_data_snapshot(&snapshot) {
+                    Ok(path) => {
+                        self.status_message = format!("Exported snapshot to: {}", path.display());
+                    }
+                    Err(e) => {
+                        self.status_message = format!("Export failed: {}", e);
+                    }
+                }
+            }
+
+            if ui.button("🗑 Reset All Local Tracking Data").clicked() {
+                clear_all_data();
+                *self.data.lock().unwrap() = ScreenTimeData::default();
+                self.status_message = "All local tracking data has been cleared.".to_string();
+            }
+        });
+
+        ui.add_space(20.0);
+        ui.heading("Process Control");
+        ui.separator();
+        if ui.add(egui::Button::new("🛑 Halt & Exit Chronos Screentime").fill(egui::Color32::from_rgb(180, 40, 40))).clicked() {
+            self.tracker_running.store(false, Ordering::SeqCst);
+            std::process::exit(0);
+        }
+    }
 }
 
-/// Show a dashboard window with realtime tracking stats and quick actions.
 pub fn show_dashboard_window(
     data: Arc<std::sync::Mutex<ScreenTimeData>>,
     settings: Arc<std::sync::Mutex<AppSettings>>,
     tracking_enabled: Arc<AtomicBool>,
-    running: Arc<AtomicBool>,
-    tray_restore_flag: Arc<AtomicBool>,
-    default_tab: Option<usize>,
+    tracker_running: Arc<AtomicBool>,
+    show_dashboard_flag: Arc<AtomicBool>,
+    select_tab: Option<usize>,
+    start_minimized: bool,
 ) {
-    nwg::Font::set_global_family("Segoe UI").ok();
+    // Load the application icon (PNG bytes) for the window title bar / taskbar.
+    let icon = load_app_icon();
 
-    let mut window = nwg::Window::default();
-    let mut icon = nwg::Icon::default();
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([550.0, 500.0])
+        .with_title("Chronos Screentime")
+        .with_app_id("chronos-screentime")
+        .with_visible(!start_minimized);
 
-    // Tab Container & Tabs
-    let mut tabs = nwg::TabsContainer::default();
-    let mut tab_activity = nwg::Tab::default();
-    let mut tab_supabase = nwg::Tab::default();
-    let mut tab_prefs = nwg::Tab::default();
-
-    // Controls for Tab 1: Activity
-    let mut header = nwg::Label::default();
-    let mut total_label = nwg::Label::default();
-    let mut tracking_label = nwg::Label::default();
-    let mut stats_box = nwg::TextBox::default();
-    let mut period_btn = nwg::Button::default();
-    let mut web_toggle_btn = nwg::Button::default();
-    let mut tracking_btn = nwg::Button::default();
-    let mut today_btn = nwg::Button::default();
-    let mut layout_activity = nwg::GridLayout::default();
-
-    // Controls for Tab 2: Cloud Sync (Supabase)
-    let mut enable_sync = nwg::CheckBox::default();
-    let mut lbl_url = nwg::Label::default();
-    let mut url = nwg::TextInput::default();
-    let mut lbl_key = nwg::Label::default();
-    let mut anon_key = nwg::TextInput::default();
-    let mut lbl_uid = nwg::Label::default();
-    let mut user_id = nwg::TextInput::default();
-    let mut lbl_interval = nwg::Label::default();
-    let mut interval = nwg::TextInput::default();
-    let mut lifeos_link_btn = nwg::Button::default();
-    let mut test_btn = nwg::Button::default();
-    let mut save_btn = nwg::Button::default();
-    let mut logon_time_lbl = nwg::Label::default();
-    let mut last_upload_lbl = nwg::Label::default();
-    let mut layout_supabase = nwg::GridLayout::default();
-
-    // Controls for Tab 3: Preferences & Tools
-    let mut start_with_windows = nwg::CheckBox::default();
-    let mut start_minimized = nwg::CheckBox::default();
-    let mut lbl_idle = nwg::Label::default();
-    let mut idle_input = nwg::TextInput::default();
-    let mut idle_apply_btn = nwg::Button::default();
-    let mut minimize_tray_btn = nwg::Button::default();
-    let mut restore_tray_btn = nwg::Button::default();
-    let mut reset_app_input = nwg::TextInput::default();
-    let mut reset_app_btn = nwg::Button::default();
-    let mut export_btn = nwg::Button::default();
-    let mut reset_all_btn = nwg::Button::default();
-    let mut exit_btn = nwg::Button::default();
-    let mut layout_prefs = nwg::GridLayout::default();
-
-    // Timer & main layout
-    let mut timer = nwg::AnimationTimer::default();
-    let mut main_layout = nwg::GridLayout::default();
-
-    let current_period = Rc::new(RefCell::new(SummaryPeriod::Today));
-    let websites_only = Rc::new(RefCell::new(false));
-    let reset_all_confirm_armed = Rc::new(RefCell::new(false));
-
-    let icon_path = icon_path();
-    let icon_loaded = icon_path.exists()
-        && nwg::Icon::builder()
-            .source_file(Some(icon_path.to_str().unwrap_or("icon.ico")))
-            .strict(false)
-            .build(&mut icon)
-            .is_ok();
-
-    let mut win_builder = nwg::Window::builder()
-        .size((780, 680))
-        .position((280, 160))
-        .title("Chronos Dashboard");
-    if icon_loaded {
-        win_builder = win_builder.icon(Some(&icon));
-    }
-    win_builder
-        .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE)
-        .build(&mut window)
-        .expect("Build dashboard window");
-
-    // Build Tabs
-    nwg::TabsContainer::builder()
-        .parent(&window)
-        .build(&mut tabs)
-        .expect("tabs container");
-
-    nwg::Tab::builder()
-        .parent(&tabs)
-        .text("Activity Dashboard")
-        .build(&mut tab_activity)
-        .expect("tab activity");
-
-    nwg::Tab::builder()
-        .parent(&tabs)
-        .text("Supabase Cloud Sync")
-        .build(&mut tab_supabase)
-        .expect("tab supabase");
-
-    nwg::Tab::builder()
-        .parent(&tabs)
-        .text("Preferences & Maintenance")
-        .build(&mut tab_prefs)
-        .expect("tab preferences");
-
-    // --- TAB 1 (Activity) BUILD ---
-    nwg::Label::builder()
-        .text("Realtime Screentime Activity Stats")
-        .parent(&tab_activity)
-        .build(&mut header)
-        .expect("dashboard header");
-
-    nwg::Label::builder()
-        .text("Today total: 0s")
-        .parent(&tab_activity)
-        .build(&mut total_label)
-        .expect("dashboard total");
-
-    nwg::Label::builder()
-        .text("Tracking: Running")
-        .parent(&tab_activity)
-        .build(&mut tracking_label)
-        .expect("dashboard tracking status");
-
-    nwg::Button::builder()
-        .text("Period: Today")
-        .parent(&tab_activity)
-        .build(&mut period_btn)
-        .expect("dashboard period btn");
-
-    nwg::Button::builder()
-        .text("View: Combined")
-        .parent(&tab_activity)
-        .build(&mut web_toggle_btn)
-        .expect("dashboard view btn");
-
-    nwg::Button::builder()
-        .text("Pause Tracking")
-        .parent(&tab_activity)
-        .build(&mut tracking_btn)
-        .expect("dashboard tracking btn");
-
-    nwg::Button::builder()
-        .text("Today's Summary")
-        .parent(&tab_activity)
-        .build(&mut today_btn)
-        .expect("dashboard today btn");
-
-    nwg::TextBox::builder()
-        .parent(&tab_activity)
-        .readonly(true)
-        .flags(
-            nwg::TextBoxFlags::VISIBLE
-                | nwg::TextBoxFlags::TAB_STOP
-                | nwg::TextBoxFlags::VSCROLL
-                | nwg::TextBoxFlags::AUTOVSCROLL,
-        )
-        .text("Loading...")
-        .build(&mut stats_box)
-        .expect("dashboard stats");
-
-    nwg::GridLayout::builder()
-        .parent(&tab_activity)
-        .spacing(8)
-        .child_item(nwg::GridLayoutItem::new(&header, 0, 0, 4, 1))
-        .child_item(nwg::GridLayoutItem::new(&total_label, 0, 1, 4, 1))
-        .child_item(nwg::GridLayoutItem::new(&tracking_label, 0, 2, 4, 1))
-        .child_item(nwg::GridLayoutItem::new(&period_btn, 0, 3, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&web_toggle_btn, 1, 3, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&tracking_btn, 2, 3, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&today_btn, 3, 3, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&stats_box, 0, 4, 4, 4))
-        .build(&mut layout_activity)
-        .expect("activity layout");
-
-    // --- TAB 2 (Supabase Cloud Sync) BUILD ---
-    nwg::CheckBox::builder()
-        .text("Enable Supabase Sync")
-        .parent(&tab_supabase)
-        .build(&mut enable_sync)
-        .expect("enable sync check");
-
-    nwg::Label::builder()
-        .text("Supabase URL")
-        .parent(&tab_supabase)
-        .build(&mut lbl_url)
-        .expect("label url");
-
-    nwg::TextInput::builder()
-        .parent(&tab_supabase)
-        .build(&mut url)
-        .expect("url input");
-
-    nwg::Label::builder()
-        .text("Anon Key")
-        .parent(&tab_supabase)
-        .build(&mut lbl_key)
-        .expect("label key");
-
-    nwg::TextInput::builder()
-        .parent(&tab_supabase)
-        .password(Some('*'))
-        .build(&mut anon_key)
-        .expect("key input");
-
-    nwg::Label::builder()
-        .text("User ID (LifeOS UUID)")
-        .parent(&tab_supabase)
-        .build(&mut lbl_uid)
-        .expect("label uid");
-
-    nwg::TextInput::builder()
-        .parent(&tab_supabase)
-        .password(Some('*'))
-        .build(&mut user_id)
-        .expect("user id input");
-
-    nwg::Button::builder()
-        .text("🌐 Open LifeOS GitHub")
-        .parent(&tab_supabase)
-        .build(&mut lifeos_link_btn)
-        .expect("lifeos link btn");
-
-    nwg::Label::builder()
-        .text("Upload Interval (minutes)")
-        .parent(&tab_supabase)
-        .build(&mut lbl_interval)
-        .expect("label interval");
-
-    nwg::TextInput::builder()
-        .parent(&tab_supabase)
-        .build(&mut interval)
-        .expect("interval input");
-
-    nwg::Button::builder()
-        .text("🔌 Test Connection")
-        .parent(&tab_supabase)
-        .build(&mut test_btn)
-        .expect("test btn");
-
-    nwg::Button::builder()
-        .text("Save Settings")
-        .parent(&tab_supabase)
-        .build(&mut save_btn)
-        .expect("save btn");
-
-    nwg::Label::builder()
-        .text("Logon Time: Loading...")
-        .parent(&tab_supabase)
-        .build(&mut logon_time_lbl)
-        .expect("logon label");
-
-    nwg::Label::builder()
-        .text("Last Upload: Loading...")
-        .parent(&tab_supabase)
-        .build(&mut last_upload_lbl)
-        .expect("last upload label");
-
-    nwg::GridLayout::builder()
-        .parent(&tab_supabase)
-        .spacing(8)
-        .child_item(nwg::GridLayoutItem::new(&enable_sync, 0, 0, 3, 1))
-        .child_item(nwg::GridLayoutItem::new(&lbl_url, 0, 1, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&url, 1, 1, 2, 1))
-        .child_item(nwg::GridLayoutItem::new(&lbl_key, 0, 2, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&anon_key, 1, 2, 2, 1))
-        .child_item(nwg::GridLayoutItem::new(&lbl_uid, 0, 3, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&user_id, 1, 3, 2, 1))
-        .child_item(nwg::GridLayoutItem::new(&lbl_interval, 0, 4, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&interval, 1, 4, 2, 1))
-        .child_item(nwg::GridLayoutItem::new(&lifeos_link_btn, 0, 5, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&test_btn, 1, 5, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&save_btn, 2, 5, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&logon_time_lbl, 0, 6, 3, 1))
-        .child_item(nwg::GridLayoutItem::new(&last_upload_lbl, 0, 7, 3, 1))
-        .build(&mut layout_supabase)
-        .expect("supabase layout");
-
-    // --- TAB 3 (Preferences & Tools) BUILD ---
-    nwg::CheckBox::builder()
-        .text("Start with Windows (Run at logon)")
-        .parent(&tab_prefs)
-        .build(&mut start_with_windows)
-        .expect("start with windows check");
-
-    nwg::CheckBox::builder()
-        .text("Start minimized to tray")
-        .parent(&tab_prefs)
-        .build(&mut start_minimized)
-        .expect("start minimized check");
-
-    nwg::Label::builder()
-        .text("Idle threshold (sec)")
-        .parent(&tab_prefs)
-        .build(&mut lbl_idle)
-        .expect("label idle");
-
-    nwg::TextInput::builder()
-        .parent(&tab_prefs)
-        .build(&mut idle_input)
-        .expect("idle threshold input");
-
-    nwg::Button::builder()
-        .text("Apply Idle")
-        .parent(&tab_prefs)
-        .build(&mut idle_apply_btn)
-        .expect("idle apply btn");
-
-    nwg::TextInput::builder()
-        .text("App name to reset")
-        .parent(&tab_prefs)
-        .build(&mut reset_app_input)
-        .expect("reset app name input");
-
-    nwg::Button::builder()
-        .text("Reset App Data")
-        .parent(&tab_prefs)
-        .build(&mut reset_app_btn)
-        .expect("reset app btn");
-
-    nwg::Button::builder()
-        .text("Export JSON")
-        .parent(&tab_prefs)
-        .build(&mut export_btn)
-        .expect("export btn");
-
-    nwg::Button::builder()
-        .text("Reset All Data")
-        .parent(&tab_prefs)
-        .build(&mut reset_all_btn)
-        .expect("reset all btn");
-
-    nwg::Button::builder()
-        .text("Exit App")
-        .parent(&tab_prefs)
-        .build(&mut exit_btn)
-        .expect("exit app btn");
-
-    nwg::Button::builder()
-        .text("Minimize to Tray")
-        .parent(&tab_prefs)
-        .build(&mut minimize_tray_btn)
-        .expect("minimize btn");
-
-    nwg::Button::builder()
-        .text("Restore Tray Icon")
-        .parent(&tab_prefs)
-        .build(&mut restore_tray_btn)
-        .expect("restore tray btn");
-
-    nwg::GridLayout::builder()
-        .parent(&tab_prefs)
-        .spacing(8)
-        .child_item(nwg::GridLayoutItem::new(&start_with_windows, 0, 0, 4, 1))
-        .child_item(nwg::GridLayoutItem::new(&start_minimized, 0, 1, 4, 1))
-        .child_item(nwg::GridLayoutItem::new(&lbl_idle, 0, 2, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&idle_input, 1, 2, 2, 1))
-        .child_item(nwg::GridLayoutItem::new(&idle_apply_btn, 3, 2, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&reset_app_input, 0, 3, 3, 1))
-        .child_item(nwg::GridLayoutItem::new(&reset_app_btn, 3, 3, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&export_btn, 0, 4, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&reset_all_btn, 1, 4, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&exit_btn, 2, 4, 1, 1))
-        .child_item(nwg::GridLayoutItem::new(&minimize_tray_btn, 0, 5, 2, 1))
-        .child_item(nwg::GridLayoutItem::new(&restore_tray_btn, 2, 5, 2, 1))
-        .build(&mut layout_prefs)
-        .expect("preferences layout");
-
-    // --- MAIN WINDOW LAYOUT BUILD ---
-    nwg::GridLayout::builder()
-        .parent(&window)
-        .spacing(4)
-        .child_item(nwg::GridLayoutItem::new(&tabs, 0, 0, 1, 1))
-        .build(&mut main_layout)
-        .expect("main window layout");
-
-    // Populate data
-    {
-        let s = settings.lock().unwrap();
-        // Tab 2
-        enable_sync.set_check_state(if s.enable_supabase_sync { nwg::CheckBoxState::Checked } else { nwg::CheckBoxState::Unchecked });
-        url.set_text(&s.supabase_url);
-        anon_key.set_text(&s.supabase_anon_key);
-        user_id.set_text(&s.supabase_user_id);
-        interval.set_text(&s.supabase_upload_interval_minutes.to_string());
-        
-        // Tab 3
-        start_with_windows.set_check_state(if s.start_with_windows { nwg::CheckBoxState::Checked } else { nwg::CheckBoxState::Unchecked });
-        start_minimized.set_check_state(if s.start_minimized_to_tray { nwg::CheckBoxState::Checked } else { nwg::CheckBoxState::Unchecked });
-        idle_input.set_text(&s.idle_threshold_seconds_clamped().to_string());
+    if let Some(icon_data) = icon {
+        viewport = viewport.with_icon(std::sync::Arc::new(icon_data));
     }
 
-    // Set startup logon time
-    let startup_time_str = match crate::STARTUP_TIME.get() {
-        Some(t) => t.format("%Y-%m-%d %H:%M:%S").to_string(),
-        None => "Unknown".to_string(),
+    let options = eframe::NativeOptions {
+        viewport,
+        ..Default::default()
     };
-    logon_time_lbl.set_text(&format!("Logon Time: {}", startup_time_str));
 
-    // Set last upload time
-    let last_upload = supabase::get_last_upload_time();
-    last_upload_lbl.set_text(&format!("Last Upload: {}", last_upload));
-
-    // Preselect default tab if provided
-    if let Some(idx) = default_tab {
-        tabs.set_selected_tab(idx);
-    }
-
-    nwg::AnimationTimer::builder()
-        .parent(&window)
-        .interval(Duration::from_millis(1000))
-        .active(true)
-        .build(&mut timer)
-        .expect("dashboard timer");
-
-    let initial_tracking_enabled = tracking_enabled.load(Ordering::SeqCst);
-    tracking_btn.set_text(if initial_tracking_enabled {
-        "Pause Tracking"
-    } else {
-        "Resume Tracking"
-    });
-
-    refresh_dashboard_view(
-        &data,
-        &settings,
-        &total_label,
-        &tracking_label,
-        &stats_box,
-        *current_period.borrow(),
-        *websites_only.borrow(),
-        initial_tracking_enabled,
+    let _ = eframe::run_native(
+        "Chronos Screentime",
+        options,
+        Box::new(move |_cc| {
+            Ok(Box::new(ChronosApp::new(
+                data,
+                settings,
+                tracking_enabled,
+                tracker_running,
+                show_dashboard_flag,
+                select_tab,
+            )))
+        }),
     );
-
-    let window_handle = window.handle.clone();
-    let timer_handle = timer.handle.clone();
-    let period_btn_handle = period_btn.handle.clone();
-    let web_toggle_btn_handle = web_toggle_btn.handle.clone();
-    let tracking_btn_handle = tracking_btn.handle.clone();
-    let today_btn_handle = today_btn.handle.clone();
-    let reset_all_btn_handle = reset_all_btn.handle.clone();
-    let idle_apply_btn_handle = idle_apply_btn.handle.clone();
-    let minimize_tray_btn_handle = minimize_tray_btn.handle.clone();
-    let restore_tray_btn_handle = restore_tray_btn.handle.clone();
-    let reset_app_btn_handle = reset_app_btn.handle.clone();
-    let export_btn_handle = export_btn.handle.clone();
-    let exit_btn_handle = exit_btn.handle.clone();
-    let test_btn_handle = test_btn.handle.clone();
-    let save_btn_handle = save_btn.handle.clone();
-    let lifeos_link_btn_handle = lifeos_link_btn.handle.clone();
-
-    let data_for_timer = Arc::clone(&data);
-    let data_for_today = Arc::clone(&data);
-    let data_test = Arc::clone(&data);
-    let settings_for_idle = Arc::clone(&settings);
-    let settings_for_save = Arc::clone(&settings);
-    let tracking_enabled_for_ui = Arc::clone(&tracking_enabled);
-    let running_for_exit = Arc::clone(&running);
-
-    let test_result: Arc<std::sync::Mutex<Option<Result<supabase::UploadResult, String>>>> = Arc::new(std::sync::Mutex::new(None));
-    let test_result_for_timer = Arc::clone(&test_result);
-    let test_result_for_test = Arc::clone(&test_result);
-
-    let current_period_ref = Rc::clone(&current_period);
-    let websites_only_ref = Rc::clone(&websites_only);
-    let reset_all_confirm_ref = Rc::clone(&reset_all_confirm_armed);
-
-    nwg::full_bind_event_handler(&window_handle, move |evt, _evt_data, handle| {
-        if evt == nwg::Event::OnWindowClose && handle == window_handle {
-            nwg::stop_thread_dispatch();
-            return;
-        }
-
-        if evt == nwg::Event::OnTimerTick && handle == timer_handle {
-            refresh_dashboard_view(
-                &data_for_timer,
-                &settings_for_idle,
-                &total_label,
-                &tracking_label,
-                &stats_box,
-                *current_period_ref.borrow(),
-                *websites_only_ref.borrow(),
-                tracking_enabled_for_ui.load(Ordering::SeqCst),
-            );
-
-            // Check if test connection background task finished
-            let test_opt = {
-                let mut guard = test_result_for_timer.lock().unwrap();
-                guard.take()
-            };
-            if let Some(res) = test_opt {
-                test_btn.set_enabled(true);
-                test_btn.set_text("🔌 Test Connection");
-                match res {
-                    Ok(result) => {
-                        if result.success {
-                            let msg = format!(
-                                "Upload OK.\nApps: {} / {}\nWebsites: {} / {}",
-                                result.apps_inserted,
-                                result.total_apps,
-                                result.websites_inserted,
-                                result.total_websites,
-                            );
-                            nwg::modal_info_message(&window_handle, "Test Connection", &msg);
-                            
-                            let last_upload = supabase::get_last_upload_time();
-                            last_upload_lbl.set_text(&format!("Last Upload: {}", last_upload));
-                        } else {
-                            let msg = result.error_message.unwrap_or_else(|| "Unknown error".to_string());
-                            nwg::modal_info_message(&window_handle, "Upload Failed", &msg);
-                        }
-                    }
-                    Err(err_msg) => {
-                        nwg::modal_info_message(&window_handle, "Runtime Error", &err_msg);
-                    }
-                }
-            }
-            return;
-        }
-
-        if evt != nwg::Event::OnButtonClick {
-            return;
-        }
-
-        if handle == period_btn_handle {
-            let mut p = current_period_ref.borrow_mut();
-            *p = p.next();
-            period_btn.set_text(&format!("Period: {}", p.label()));
-            return;
-        }
-
-        if handle == web_toggle_btn_handle {
-            let mut web_only = websites_only_ref.borrow_mut();
-            *web_only = !*web_only;
-            web_toggle_btn.set_text(if *web_only {
-                "View: Websites"
-            } else {
-                "View: Combined"
-            });
-            return;
-        }
-
-        if handle == tracking_btn_handle {
-            let next = !tracking_enabled_for_ui.load(Ordering::SeqCst);
-            tracking_enabled_for_ui.store(next, Ordering::SeqCst);
-            tracking_btn.set_text(if next {
-                "Pause Tracking"
-            } else {
-                "Resume Tracking"
-            });
-            return;
-        }
-
-        if handle == today_btn_handle {
-            show_today_window(Arc::clone(&data_for_today));
-            return;
-        }
-
-        if handle == reset_all_btn_handle {
-            let mut armed = reset_all_confirm_ref.borrow_mut();
-            if !*armed {
-                *armed = true;
-                reset_all_btn.set_text("Confirm Reset All");
-                nwg::modal_info_message(&window_handle, "Confirm", "Click Reset All again to confirm destructive reset.");
-                return;
-            }
-
-            clear_all_data();
-            {
-                let mut guard = data_for_timer.lock().unwrap();
-                *guard = load_screen_time_data();
-            }
-            *armed = false;
-            reset_all_btn.set_text("Reset All Data");
-            nwg::modal_info_message(&window_handle, "Reset", "All tracked data has been reset.");
-            return;
-        }
-
-        if handle == idle_apply_btn_handle {
-            let parsed = idle_input.text().trim().parse::<u32>();
-            let input = match parsed {
-                Ok(v) => v,
-                Err(_) => {
-                    lbl_idle.set_text("Idle threshold (sec) [invalid!]");
-                    return;
-                }
-            };
-            let mut updated = {
-                let guard = settings_for_idle.lock().unwrap();
-                guard.clone()
-            };
-            updated.idle_threshold_seconds = input;
-            let clamped = updated.idle_threshold_seconds_clamped();
-            updated.idle_threshold_seconds = clamped;
-            {
-                let mut guard = settings_for_idle.lock().unwrap();
-                *guard = updated.clone();
-            }
-            save_settings(&updated);
-            idle_input.set_text(&clamped.to_string());
-            lbl_idle.set_text(&format!("Idle (sec) ✓{}s", clamped));
-            return;
-        }
-
-        if handle == minimize_tray_btn_handle {
-            nwg::stop_thread_dispatch();
-            return;
-        }
-
-        if handle == restore_tray_btn_handle {
-            tray_restore_flag.store(true, Ordering::SeqCst);
-            return;
-        }
-
-        if handle == reset_app_btn_handle {
-            let app = reset_app_input.text();
-            if app.trim().is_empty() || app == "App name to reset" {
-                nwg::modal_info_message(&window_handle, "Reset App", "Enter an app name first.");
-                return;
-            }
-            let removed = reset_app_data(&app);
-            {
-                let mut guard = data_for_timer.lock().unwrap();
-                *guard = load_screen_time_data();
-            }
-            nwg::modal_info_message(
-                &window_handle,
-                "Reset App",
-                &format!("Reset completed for app: {}. Entries removed: {}", app, removed),
-            );
-            return;
-        }
-
-        if handle == export_btn_handle {
-            let snapshot = data_for_timer.lock().unwrap().clone();
-            match export_data_snapshot(&snapshot) {
-                Ok(path) => {
-                    let msg = format!("Data exported successfully to:\n{}", path.to_string_lossy());
-                    nwg::modal_info_message(&window_handle, "Export JSON", &msg);
-                }
-                Err(e) => {
-                    let msg = format!("Failed to export data: {}", e);
-                    nwg::modal_info_message(&window_handle, "Export Failed", &msg);
-                }
-            }
-            return;
-        }
-
-        if handle == exit_btn_handle {
-            running_for_exit.store(false, Ordering::SeqCst);
-            nwg::stop_thread_dispatch();
-            return;
-        }
-
-        if handle == lifeos_link_btn_handle {
-            std::process::Command::new("cmd")
-                .args(["/C", "start", "https://github.com/ghassanelgendy/lifeOS/"])
-                .spawn()
-                .ok();
-            return;
-        }
-
-        if handle == save_btn_handle {
-            let s = AppSettings {
-                enable_supabase_sync: enable_sync.check_state() == nwg::CheckBoxState::Checked,
-                supabase_url: url.text(),
-                supabase_anon_key: anon_key.text(),
-                supabase_user_id: user_id.text(),
-                supabase_upload_interval_minutes: interval.text().parse().unwrap_or(30),
-                idle_threshold_seconds: idle_input.text().parse().unwrap_or(120),
-                start_with_windows: start_with_windows.check_state() == nwg::CheckBoxState::Checked,
-                start_minimized_to_tray: start_minimized.check_state() == nwg::CheckBoxState::Checked,
-            };
-            {
-                let mut guard = settings_for_save.lock().unwrap();
-                *guard = s.clone();
-            }
-            save_settings(&s);
-            if let Err(e) = startup::set_run_at_startup(s.start_with_windows) {
-                eprintln!("[chronos] set startup failed: {}", e);
-            }
-            let clamped = s.idle_threshold_seconds_clamped();
-            idle_input.set_text(&clamped.to_string());
-            nwg::modal_info_message(&window_handle, "Saved", "Settings saved successfully.");
-            return;
-        }
-
-        if handle == test_btn_handle {
-            let s = AppSettings {
-                enable_supabase_sync: enable_sync.check_state() == nwg::CheckBoxState::Checked,
-                supabase_url: url.text(),
-                supabase_anon_key: anon_key.text(),
-                supabase_user_id: user_id.text(),
-                supabase_upload_interval_minutes: interval.text().parse().unwrap_or(30),
-                idle_threshold_seconds: idle_input.text().parse().unwrap_or(120),
-                start_with_windows: start_with_windows.check_state() == nwg::CheckBoxState::Checked,
-                start_minimized_to_tray: start_minimized.check_state() == nwg::CheckBoxState::Checked,
-            };
-            if s.supabase_url.is_empty() || s.supabase_anon_key.is_empty() || s.supabase_user_id.is_empty() {
-                nwg::modal_info_message(&window_handle, "Error", "Please set URL, Anon Key, and User ID.");
-                return;
-            }
-            if uuid::Uuid::parse_str(s.supabase_user_id.trim()).is_err() {
-                nwg::modal_info_message(&window_handle, "Error", "User ID must be a valid UUID.");
-                return;
-            }
-
-            test_btn.set_text("Testing...");
-            test_btn.set_enabled(false);
-
-            let to_upload = data_test.lock().unwrap().clone();
-            let device_id = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "PC".to_string());
-            let test_result_clone = Arc::clone(&test_result_for_test);
-
-            std::thread::spawn(move || {
-                let rt = match tokio::runtime::Runtime::new() {
-                    Ok(r) => r,
-                    Err(e) => {
-                        let mut guard = test_result_clone.lock().unwrap();
-                        *guard = Some(Err(format!("Failed to start runtime: {}", e)));
-                        return;
-                    }
-                };
-                let result = rt.block_on(supabase::upload_screentime_data(
-                    &to_upload,
-                    &s.supabase_url,
-                    &s.supabase_anon_key,
-                    &s.supabase_user_id,
-                    &device_id,
-                    0, // Bypass time-gating checks
-                ));
-                let mut guard = test_result_clone.lock().unwrap();
-                *guard = Some(Ok(result));
-            });
-        }
-    });
-
-    nwg::dispatch_thread_events();
 }
 
+/// Decode the bundled PNG icon into egui's IconData format.
+fn load_app_icon() -> Option<egui::IconData> {
+    let bytes = include_bytes!("../icon-9.png");
+    let img = image::load_from_memory_with_format(bytes, image::ImageFormat::Png).ok()?;
+    let img = img.into_rgba8();
+    let (w, h) = img.dimensions();
+    Some(egui::IconData {
+        rgba: img.into_raw(),
+        width: w,
+        height: h,
+    })
+}
 
+pub fn show_today_window(data: Arc<std::sync::Mutex<ScreenTimeData>>) {
+    let settings = Arc::new(std::sync::Mutex::new(load_settings()));
+    let tracking = Arc::new(AtomicBool::new(true));
+    let running = Arc::new(AtomicBool::new(true));
+    let restore = Arc::new(AtomicBool::new(false));
+    show_dashboard_window(data, settings, tracking, running, restore, Some(0), false);
+}
