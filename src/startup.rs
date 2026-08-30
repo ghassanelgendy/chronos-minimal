@@ -16,6 +16,36 @@ fn current_exe_normalized() -> Option<String> {
     Some(exe.to_string_lossy().replace('/', "\\"))
 }
 
+/// Resolve the exe the autostart/app-drawer entry should launch.
+/// Prefers an optimized release build over a debug build so the app starts
+/// (and the debug binary's slow rendering) isn't what auto-launches at logon.
+#[cfg(windows)]
+fn current_exe_preferred() -> std::io::Result<std::path::PathBuf> {
+    std::env::current_exe()
+}
+
+#[cfg(not(windows))]
+fn current_exe_preferred() -> std::io::Result<std::path::PathBuf> {
+    if let Some(base) = directories::BaseDirs::new() {
+        let installed = base.home_dir().join(".local").join("bin").join("chronos-screentime");
+        if installed.exists() {
+            return Ok(installed);
+        }
+    }
+    let exe = std::env::current_exe()?;
+    if exe.to_string_lossy().contains("/target/debug/") {
+        if let Some(target) = exe.parent().and_then(|p| p.parent()) {
+            if let Some(name) = exe.file_name() {
+                let release = target.join("release").join(name);
+                if release.exists() {
+                    return Ok(release);
+                }
+            }
+        }
+    }
+    Ok(exe)
+}
+
 #[cfg(windows)]
 fn normalize_path(value: &str) -> String {
     value.trim_matches('"').replace('/', "\\")
@@ -174,8 +204,7 @@ fn desktop_entry_content(exe: &std::path::Path, icon: &str) -> String {
          Terminal=false\n\
          Categories=Utility;Clock;Monitor;\n\
          StartupWMClass=chronos-screentime\n\
-         Keywords=screentime;productivity;tracker;chronos;time;\n\
-         StartupNotify=true\n",
+         Keywords=screentime;productivity;tracker;chronos;time;\n",
         exe = exe.display(),
         icon = icon,
     )
@@ -199,7 +228,7 @@ pub fn install_app_entry() -> Result<(), String> {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("failed creating applications dir: {}", e))?;
     }
-    let exe = std::env::current_exe()
+    let exe = current_exe_preferred()
         .map_err(|e| format!("failed resolving exe path: {}", e))?;
     let content = desktop_entry_content(&exe, &icon);
     std::fs::write(&desktop_path, &content)
@@ -230,7 +259,25 @@ pub fn uninstall_app_entry() -> Result<(), String> {
 
 #[cfg(not(windows))]
 pub fn is_run_at_startup_enabled() -> bool {
-    get_autostart_desktop_path().map_or(false, |p| p.exists())
+    let Some(path) = get_autostart_desktop_path() else {
+        return false;
+    };
+    if !path.exists() {
+        return false;
+    }
+    // Also verify the entry launches this app (or the preferred release build). A stale
+    // autostart entry pointing at an old debug binary is then rewritten on the next launch.
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Ok(preferred) = current_exe_preferred() {
+            let preferred_str = preferred.to_string_lossy().replace('\\', "/");
+            if content.contains(&preferred_str) {
+                return true;
+            }
+            return false;
+        }
+        return true;
+    }
+    false
 }
 
 #[cfg(not(windows))]
@@ -243,15 +290,15 @@ pub fn set_run_at_startup(enabled: bool) -> Result<(), String> {
                 .map_err(|e| format!("failed creating autostart dir: {}", e))?;
         }
         let icon = ensure_icon_installed();
-        let exe = std::env::current_exe()
-            .map_err(|e| format!("failed resolving exe path: {}", e))?;
+        let exe = std::path::PathBuf::from(
+            format!("{}/.local/bin/chronos-screentime", std::env::var("HOME").unwrap_or_default())
+        );
         let content = desktop_entry_content(&exe, &icon);
         std::fs::write(&desktop_path, content)
-            .map_err(|e| format!("failed writing autostart entry: {}", e))?;
+            .map_err(|e| format!("failed writing autostart file: {}", e))?;
     } else if desktop_path.exists() {
         std::fs::remove_file(&desktop_path)
             .map_err(|e| format!("failed removing autostart entry: {}", e))?;
     }
     Ok(())
 }
-

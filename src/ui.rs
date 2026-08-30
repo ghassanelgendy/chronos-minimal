@@ -9,6 +9,7 @@ use crate::startup;
 use crate::supabase;
 use chrono::{Local, NaiveDate};
 use eframe::egui;
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -57,63 +58,16 @@ impl GnomeThemeConfig {
     pub fn detect() -> Self {
         #[cfg(target_os = "linux")]
         {
-            let gtk_theme = std::process::Command::new("gsettings")
-                .args(["get", "org.gnome.desktop.interface", "gtk-theme"])
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .unwrap_or_default()
-                .trim()
-                .trim_matches('\'')
-                .to_string();
-
-            let color_scheme = std::process::Command::new("gsettings")
-                .args(["get", "org.gnome.desktop.interface", "color-scheme"])
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .unwrap_or_default()
-                .trim()
-                .trim_matches('\'')
-                .to_string();
-
-            let button_layout = std::process::Command::new("gsettings")
-                .args(["get", "org.gnome.desktop.wm.preferences", "button-layout"])
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .unwrap_or_default()
-                .trim()
-                .trim_matches('\'')
-                .to_string();
-
-            let is_dark = color_scheme.contains("dark") || gtk_theme.to_lowercase().contains("dark");
-            let is_whitesur = gtk_theme.to_lowercase().contains("whitesur");
-
-            // Format of button_layout is "left_buttons:right_buttons" (e.g. "close,minimize,maximize:")
-            let (left_part, right_part) = match button_layout.split_once(':') {
-                Some((l, r)) => (l, r),
-                None => (button_layout.as_str(), ""),
-            };
-
-            let buttons_on_left = !left_part.is_empty();
-            let active_part = if buttons_on_left { left_part } else { right_part };
-
-            let has_close = active_part.contains("close");
-            let has_minimize = active_part.contains("minimize");
-            let has_maximize = active_part.contains("maximize");
-
-            Self {
-                is_dark,
-                is_whitesur,
-                buttons_on_left,
-                has_close,
-                has_minimize,
-                has_maximize,
-                gtk_theme,
-                color_scheme,
-                button_layout,
+            // Spawning `gsettings` on every launch (3 subprocesses) stalls the first frame
+            // (and can hang for seconds each if the session bus is slow at logon). Use the
+            // cached detection when it's fresh, so the window opens without subprocess churn.
+            if let Some(cached) = Self::from_theme_cache() {
+                return cached;
             }
+
+            let config = Self::detect_live();
+            config.save_theme_cache();
+            config
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -130,6 +84,140 @@ impl GnomeThemeConfig {
             }
         }
     }
+
+    #[cfg(target_os = "linux")]
+    fn detect_live() -> Self {
+        let gtk_theme = std::process::Command::new("gsettings")
+            .args(["get", "org.gnome.desktop.interface", "gtk-theme"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .unwrap_or_default()
+            .trim()
+            .trim_matches('\'')
+            .to_string();
+
+        let color_scheme = std::process::Command::new("gsettings")
+            .args(["get", "org.gnome.desktop.interface", "color-scheme"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .unwrap_or_default()
+            .trim()
+            .trim_matches('\'')
+            .to_string();
+
+        let button_layout = std::process::Command::new("gsettings")
+            .args(["get", "org.gnome.desktop.wm.preferences", "button-layout"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .unwrap_or_default()
+            .trim()
+            .trim_matches('\'')
+            .to_string();
+
+        let is_dark = color_scheme.contains("dark") || gtk_theme.to_lowercase().contains("dark");
+        let is_whitesur = gtk_theme.to_lowercase().contains("whitesur");
+
+        // Format of button_layout is "left_buttons:right_buttons" (e.g. "close,minimize,maximize:")
+        let (left_part, right_part) = match button_layout.split_once(':') {
+            Some((l, r)) => (l, r),
+            None => (button_layout.as_str(), ""),
+        };
+
+        let buttons_on_left = !left_part.is_empty();
+        let active_part = if buttons_on_left { left_part } else { right_part };
+
+        let has_close = active_part.contains("close");
+        let has_minimize = active_part.contains("minimize");
+        let has_maximize = active_part.contains("maximize");
+
+        Self {
+            is_dark,
+            is_whitesur,
+            buttons_on_left,
+            has_close,
+            has_minimize,
+            has_maximize,
+            gtk_theme,
+            color_scheme,
+            button_layout,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn save_theme_cache(&self) {
+        let cache = ThemeCache {
+            detected_at: chrono::Local::now().to_rfc3339(),
+            gtk_theme: self.gtk_theme.clone(),
+            color_scheme: self.color_scheme.clone(),
+            button_layout: self.button_layout.clone(),
+            is_dark: self.is_dark,
+            is_whitesur: self.is_whitesur,
+            buttons_on_left: self.buttons_on_left,
+            has_close: self.has_close,
+            has_minimize: self.has_minimize,
+            has_maximize: self.has_maximize,
+        };
+        if let Some(path) = theme_cache_path() {
+            if let Ok(json) = serde_json::to_string_pretty(&cache) {
+                let _ = std::fs::write(path, json);
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn from_theme_cache() -> Option<Self> {
+        let path = theme_cache_path()?;
+        let content = std::fs::read_to_string(path).ok()?;
+        let cache: ThemeCache = serde_json::from_str(&content).ok()?;
+        let detected_at = chrono::DateTime::parse_from_rfc3339(&cache.detected_at).ok()?;
+        if chrono::Local::now().signed_duration_since(detected_at).num_seconds().abs() > 12 * 3600 {
+            return None;
+        }
+        Some(Self {
+            is_dark: cache.is_dark,
+            is_whitesur: cache.is_whitesur,
+            buttons_on_left: cache.buttons_on_left,
+            has_close: cache.has_close,
+            has_minimize: cache.has_minimize,
+            has_maximize: cache.has_maximize,
+            gtk_theme: cache.gtk_theme,
+            color_scheme: cache.color_scheme,
+            button_layout: cache.button_layout,
+        })
+    }
+}
+
+/// Serialized GNOME theme snapshot, so we don't have to re-run `gsettings`
+/// subprocesses on every app launch.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ThemeCache {
+    detected_at: String,
+    gtk_theme: String,
+    color_scheme: String,
+    button_layout: String,
+    is_dark: bool,
+    is_whitesur: bool,
+    buttons_on_left: bool,
+    has_close: bool,
+    has_minimize: bool,
+    has_maximize: bool,
+}
+
+#[cfg(target_os = "linux")]
+fn theme_cache_path() -> Option<std::path::PathBuf> {
+    let base = directories::BaseDirs::new()?;
+    let path = base
+        .config_dir()
+        .join("chronosscreentime")
+        .join("theme_cache.json");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    Some(path)
 }
 
 pub struct ChronosApp {
@@ -151,7 +239,8 @@ pub struct ChronosApp {
     pub idle_threshold: u32,
     pub enable_sync: bool,
     pub start_at_logon: bool,
-    pub start_minimized: bool,
+    pub start_minimized_pref: bool,
+    pub should_minimize_on_init: bool,
     pub close_to_tray: bool,
     pub app_entry_installed: bool,
 }
@@ -208,7 +297,8 @@ impl ChronosApp {
             idle_threshold: idle,
             enable_sync: sync,
             start_at_logon: logon,
-            start_minimized: minimized,
+            start_minimized_pref: minimized,
+            should_minimize_on_init: minimized,
             close_to_tray: close_tray,
             app_entry_installed: startup::is_app_entry_installed(),
         }
@@ -270,6 +360,12 @@ impl eframe::App for ChronosApp {
         let is_focused = ctx.input(|i| i.focused);
         crate::tracker::IS_CHRONOS_FOCUSED.store(is_focused, Ordering::SeqCst);
 
+        // If configured to start minimized, ensure window visibility is set to false on first frame
+        if self.should_minimize_on_init {
+            self.should_minimize_on_init = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
+
         // Check if tray icon or background signal requested showing the dashboard window
         if self.show_dashboard_flag.swap(false, Ordering::SeqCst) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
@@ -279,10 +375,13 @@ impl eframe::App for ChronosApp {
 
         // Intercept close button (X): hide window completely from dock and keep running in AppIndicator
         if ctx.input(|i| i.viewport().close_requested()) {
+            eprintln!("[dbg] close requested, close_to_tray={}", self.close_to_tray);
             if self.close_to_tray {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                eprintln!("[dbg] sent CancelClose + Visible(false)");
             } else {
+                eprintln!("[dbg] exiting");
                 self.tracker_running.store(false, Ordering::SeqCst);
                 std::process::exit(0);
             }
@@ -495,7 +594,7 @@ impl ChronosApp {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 egui::Grid::new("activity_grid")
                     .striped(true)
-                    .min_col_width(120.0)
+                    .min_col_width(60.0)
                     .spacing([12.0, 6.0])
                     .show(ui, |ui| {
                         ui.label(egui::RichText::new("#").strong());
@@ -511,7 +610,11 @@ impl ChronosApp {
                         for (idx, item) in lines.iter().enumerate() {
                             ui.label(format!("{}", idx + 1));
                             let icon_prefix = if item.is_website { "🌐 " } else { "📱 " };
-                            ui.label(format!("{}{}", icon_prefix, item.name));
+                            let name_resp = ui.add_sized(
+                                [260.0, 20.0],
+                                egui::Label::new(format!("{}{}", icon_prefix, item.name)).truncate(),
+                            );
+                            name_resp.on_hover_text(item.name.as_str());
                             ui.label(if item.is_website { "Website" } else { "Application" });
                             ui.label(format!("{}", item.session_count));
                             ui.label(format_seconds_display(item.total_seconds));
@@ -666,7 +769,7 @@ impl ChronosApp {
         }
 
         ui.add_space(4.0);
-        if ui.checkbox(&mut self.start_minimized, "Start minimized to AppIndicator / System Tray").changed() {
+        if ui.checkbox(&mut self.start_minimized_pref, "Start minimized to AppIndicator / System Tray").changed() {
             changed = true;
         }
 
@@ -682,7 +785,7 @@ impl ChronosApp {
         if changed {
             let mut s = self.settings.lock().unwrap();
             s.start_with_windows = self.start_at_logon;
-            s.start_minimized_to_tray = self.start_minimized;
+            s.start_minimized_to_tray = self.start_minimized_pref;
             s.close_to_tray = self.close_to_tray;
             s.idle_threshold_seconds = self.idle_threshold;
             save_settings(&s);
@@ -746,6 +849,7 @@ pub fn show_dashboard_window(
     show_dashboard_flag: Arc<AtomicBool>,
     select_tab: Option<usize>,
     start_minimized: bool,
+    egui_ctx: Arc<std::sync::OnceLock<egui::Context>>,
 ) {
     // Load the application icon (PNG bytes) for the window title bar / taskbar.
     let icon = load_app_icon();
@@ -769,7 +873,8 @@ pub fn show_dashboard_window(
     let _ = eframe::run_native(
         "Chronos Screentime",
         options,
-        Box::new(move |_cc| {
+        Box::new(move |cc| {
+            let _ = egui_ctx.set(cc.egui_ctx.clone());
             Ok(Box::new(ChronosApp::new(
                 data,
                 settings,
@@ -800,5 +905,5 @@ pub fn show_today_window(data: Arc<std::sync::Mutex<ScreenTimeData>>) {
     let tracking = Arc::new(AtomicBool::new(true));
     let running = Arc::new(AtomicBool::new(true));
     let restore = Arc::new(AtomicBool::new(false));
-    show_dashboard_window(data, settings, tracking, running, restore, Some(0), false);
+    show_dashboard_window(data, settings, tracking, running, restore, Some(0), false, Arc::new(std::sync::OnceLock::new()));
 }
