@@ -23,7 +23,31 @@ pub const POLL_INTERVAL_SECS: u64 = 1;
 
 pub static IS_CHRONOS_FOCUSED: AtomicBool = AtomicBool::new(false);
 
-const FILE_EXTENSIONS_BLACKLIST: &[&str] = &[
+/// Real-time active tab reported by the Chronos Browser Extension
+static ACTIVE_BROWSER_TAB: std::sync::RwLock<Option<(String, std::time::Instant)>> = std::sync::RwLock::new(None);
+
+/// Record an active tab reported from the browser extension HTTP receiver
+pub fn update_browser_tab(url: &str) {
+    if let Some(domain) = normalize_domain(url) {
+        if let Ok(mut lock) = ACTIVE_BROWSER_TAB.write() {
+            *lock = Some((domain, std::time::Instant::now()));
+        }
+    }
+}
+
+/// Retrieve the active browser tab if reported within the last 15 seconds
+pub fn get_extension_active_domain() -> Option<String> {
+    if let Ok(lock) = ACTIVE_BROWSER_TAB.read() {
+        if let Some((ref domain, ref timestamp)) = *lock {
+            if timestamp.elapsed() <= std::time::Duration::from_secs(15) {
+                return Some(domain.clone());
+            }
+        }
+    }
+    None
+}
+
+pub(crate) const FILE_EXTENSIONS_BLACKLIST: &[&str] = &[
     "txt", "gz", "tar", "zip", "7z", "rar", "bz2", "xz", "zst",
     "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp",
     "json", "yaml", "yml", "toml", "xml", "csv", "tsv", "log", "md", "markdown",
@@ -140,7 +164,7 @@ fn normalize_domain(input: &str) -> Option<String> {
     Some(canonical.to_string())
 }
 
-fn favicon_url_for_domain(domain: &str) -> String {
+pub(crate) fn favicon_url_for_domain(domain: &str) -> String {
     format!("https://www.google.com/s2/favicons?sz=64&domain={}", domain)
 }
 
@@ -322,6 +346,10 @@ pub fn is_internal_browser_page(clean_title: &str) -> bool {
         || lower.starts_with("about:")
         || lower.starts_with("opera://")
         || lower.starts_with("vivaldi://")
+        || lower.starts_with("file://")
+        || lower.starts_with("file%3a")
+        || lower.starts_with("blob:")
+        || lower.starts_with("view-source:")
 }
 
 fn is_github_repo_title(segment: &str) -> bool {
@@ -434,12 +462,25 @@ fn brand_token_to_domain(token: &str) -> Option<&'static str> {
         "substack" => Some("substack.com"),
         "dev.to" => Some("dev.to"),
         "arxiv" => Some("arxiv.org"),
+        "icloud" | "icloud photos" | "icloud mail" | "icloud drive" | "apple id" => Some("icloud.com"),
+        "apple" | "apple developer" => Some("apple.com"),
         "duckduckgo" => Some("duckduckgo.com"),
         "bing" => Some("bing.com"),
         "fast.com" => Some("fast.com"),
         "speedtest" => Some("speedtest.net"),
         _ => None,
     }
+}
+
+pub(crate) fn is_filename_like_label(label: &str) -> bool {
+    if label.contains(' ') || !label.contains('.') {
+        return false;
+    }
+    let lower = label.to_lowercase();
+    let last_dot = lower.rsplit('.').next().unwrap_or("");
+    FILE_EXTENSIONS_BLACKLIST.iter().any(|ext| {
+        last_dot == *ext || last_dot.ends_with(&format!("_{}", ext))
+    })
 }
 
 /// Extract domain from window title (e.g. "Gemini - Chromium" -> gemini.google.com, "GitHub - Chrome" -> github.com).
@@ -565,20 +606,43 @@ pub fn domain_from_title(title: &str) -> Option<String> {
         return Some("deepseek.com".to_string());
     }
 
-    // 6. Scan words / tokens in title for explicit domain formats (e.g. "github.com", "docs.rs", "youtu.be")
+    // 6. Scan words / tokens in title for explicit domain or URL formats (e.g. "github.com", "http://192.168.1.100:8123/...", "docs.rs")
     for word in clean_title.split_whitespace() {
-        let cleaned = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '-');
+        if let Some(d) = normalize_domain(word) {
+            return Some(d);
+        }
+        let cleaned = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '-' && c != ':' && c != '/');
         if let Some(d) = normalize_domain(cleaned) {
             return Some(d);
+        }
+    }
+
+    // 7. Scan tokens & word pairs for brand names, so sites resolve to their canonical domain
+    //    even when the page title carries no domain — e.g. Google's "2-Step Verification To help
+    //    keep your account safe, Google wants to make sure it's really you trying to sign in"
+    //    should be tracked as google.com, not as the whole page-title sentence.
+    let tokens: Vec<&str> = clean_title.split_whitespace().collect();
+    for pair in tokens.windows(2) {
+        if let Some(d) = brand_token_to_domain(&format!("{} {}", pair[0], pair[1])) {
+            return Some(d.to_string());
+        }
+    }
+    for &tok in &tokens {
+        let cleaned = tok.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+        if cleaned.is_empty() {
+            continue;
+        }
+        if let Some(d) = brand_token_to_domain(cleaned) {
+            return Some(d.to_string());
         }
     }
 
     None
 }
 
-/// Like domain_from_title, but guarantees that ANY browser window is tracked as a website —
-/// even if the real domain cannot be identified. Falls back to the cleaned page title
-/// (browser suffix stripped) so time is NEVER silently counted as the browser app name.
+/// Extract domain or subdomain from browser window title (e.g. "Gemini - Google Chrome" -> "gemini.google.com").
+/// Strictly returns a valid domain/subdomain or None (which will cause time to be attributed to the browser app itself,
+/// preventing arbitrary tab title strings and duplicate website entries).
 pub fn domain_from_browser_title(title: &str) -> Option<String> {
     let raw_trimmed = title.trim();
     if raw_trimmed.is_empty() {
@@ -592,20 +656,23 @@ pub fn domain_from_browser_title(title: &str) -> Option<String> {
         return None;
     }
 
-    // Try to extract a real domain first.
-    if let Some(d) = domain_from_title(raw_trimmed) {
-        return Some(d);
+    // 1. If the browser extension has reported an active tab URL recently, prioritize it (100% exact domain).
+    if let Some(ext_domain) = get_extension_active_domain() {
+        return Some(ext_domain);
     }
 
-    // Fallback: cleaned page title as a label for unknown sites.
-    // e.g. "My Dashboard - Chromium" → "My Dashboard"
-    // e.g. "Checkout — Brave" → "Checkout"
-    let label = clean_title.trim();
-    if label.is_empty() {
-        return None;
+    // 2. Try to extract a known domain / subdomain / brand canonical domain from title.
+    if let Some(domain) = domain_from_title(raw_trimmed) {
+        return Some(domain);
     }
 
-    Some(label.to_string())
+    // 2. Fallback: If no explicit domain pattern matched, use the stripped tab title so the
+    //    page is still tracked as a website rather than being grouped under the browser application.
+    if !clean_title.is_empty() && !is_filename_like_label(clean_title) {
+        Some(clean_title.to_string())
+    } else {
+        None
+    }
 }
 
 
@@ -1001,14 +1068,17 @@ fn resolve_flatpak_or_snap_name(pid: u32) -> Option<String> {
 struct AtspiContext {
     _atspi_lib: libloading::Library,
     _gobject_lib: libloading::Library,
+    _glib_lib: libloading::Library,
     atspi_get_desktop: unsafe extern "C" fn(i32) -> *mut std::ffi::c_void,
     atspi_accessible_get_child_count: unsafe extern "C" fn(*mut std::ffi::c_void, *mut *mut std::ffi::c_void) -> i32,
     atspi_accessible_get_child_at_index: unsafe extern "C" fn(*mut std::ffi::c_void, i32, *mut *mut std::ffi::c_void) -> *mut std::ffi::c_void,
     atspi_accessible_get_state_set: unsafe extern "C" fn(*mut std::ffi::c_void) -> *mut std::ffi::c_void,
     atspi_state_set_contains: unsafe extern "C" fn(*mut std::ffi::c_void, i32) -> i32,
     atspi_accessible_get_name: unsafe extern "C" fn(*mut std::ffi::c_void, *mut *mut std::ffi::c_void) -> *const std::ffi::c_char,
+    atspi_accessible_get_role_name: unsafe extern "C" fn(*mut std::ffi::c_void) -> *const std::ffi::c_char,
     atspi_accessible_get_process_id: unsafe extern "C" fn(*mut std::ffi::c_void, *mut *mut std::ffi::c_void) -> u32,
     g_object_unref: unsafe extern "C" fn(*mut std::ffi::c_void),
+    g_free: unsafe extern "C" fn(*mut std::ffi::c_void),
 }
 
 #[cfg(not(windows))]
@@ -1047,6 +1117,9 @@ impl AtspiContext {
             let gobject_lib = libloading::Library::new("libgobject-2.0.so.0")
                 .or_else(|_| libloading::Library::new("libgobject-2.0.so"))
                 .ok()?;
+            let glib_lib = libloading::Library::new("libglib-2.0.so.0")
+                .or_else(|_| libloading::Library::new("libglib-2.0.so"))
+                .ok()?;
 
             std::env::set_var("NO_AT_BRIDGE", "1");
             let atspi_init: libloading::Symbol<unsafe extern "C" fn() -> i32> = atspi_lib.get(b"atspi_init").ok()?;
@@ -1064,10 +1137,19 @@ impl AtspiContext {
                 atspi_lib.get(b"atspi_state_set_contains").ok()?;
             let atspi_accessible_get_name: libloading::Symbol<unsafe extern "C" fn(*mut std::ffi::c_void, *mut *mut std::ffi::c_void) -> *const std::ffi::c_char> =
                 atspi_lib.get(b"atspi_accessible_get_name").ok()?;
+            let atspi_accessible_get_role_name: libloading::Symbol<unsafe extern "C" fn(*mut std::ffi::c_void) -> *const std::ffi::c_char> =
+                atspi_lib.get(b"atspi_accessible_get_role_name").ok()?;
             let atspi_accessible_get_process_id: libloading::Symbol<unsafe extern "C" fn(*mut std::ffi::c_void, *mut *mut std::ffi::c_void) -> u32> =
                 atspi_lib.get(b"atspi_accessible_get_process_id").ok()?;
             let g_object_unref: libloading::Symbol<unsafe extern "C" fn(*mut std::ffi::c_void)> =
                 gobject_lib.get(b"g_object_unref").ok()?;
+            let g_object_unref_fn = *g_object_unref;
+
+            let g_free_fn: unsafe extern "C" fn(*mut std::ffi::c_void) = {
+                let g_free: libloading::Symbol<unsafe extern "C" fn(*mut std::ffi::c_void)> =
+                    glib_lib.get(b"g_free").ok()?;
+                *g_free
+            };
 
             Some(Self {
                 atspi_get_desktop: *atspi_get_desktop,
@@ -1076,10 +1158,13 @@ impl AtspiContext {
                 atspi_accessible_get_state_set: *atspi_accessible_get_state_set,
                 atspi_state_set_contains: *atspi_state_set_contains,
                 atspi_accessible_get_name: *atspi_accessible_get_name,
+                atspi_accessible_get_role_name: *atspi_accessible_get_role_name,
                 atspi_accessible_get_process_id: *atspi_accessible_get_process_id,
-                g_object_unref: *g_object_unref,
+                g_object_unref: g_object_unref_fn,
                 _atspi_lib: atspi_lib,
                 _gobject_lib: gobject_lib,
+                _glib_lib: glib_lib,
+                g_free: g_free_fn,
             })
         }
     }
@@ -1553,13 +1638,7 @@ pub fn run_tracker_loop(
     tracking_enabled: Arc<AtomicBool>,
     running: Arc<AtomicBool>,
 ) {
-    use crate::storage::{load_screen_time_data, save_screen_time_data};
-
-    // Load initial data
-    {
-        let mut guard = data.lock().unwrap();
-        *guard = load_screen_time_data();
-    }
+    use crate::storage::save_screen_time_data;
     let mut last_switch_key: Option<String> = None;
     let mut save_counter: u32 = 0;
 
@@ -1699,6 +1778,88 @@ mod tests {
         assert_eq!(domain_from_title("Settings - Google Chrome"), None);
         // Ensure filename in title is not treated as website
         assert_eq!(domain_from_title("rockyou.txt - Text Editor"), None);
+    }
+
+    #[test]
+    fn test_domain_brand_scan_from_title() {
+        // Google's 2-Step Verification page title carries no domain but is clearly Google.
+        assert_eq!(
+            domain_from_title("2-Step Verification To help keep your account safe, Google wants to make sure it's really you trying to sign in"),
+            Some("google.com".to_string())
+        );
+        assert_eq!(
+            domain_from_title("Confirm your identity - Google Sign in"),
+            Some("google.com".to_string())
+        );
+        assert_eq!(
+            domain_from_title("ChatGPT 4o"),
+            Some("chatgpt.com".to_string())
+        );
+        // Brand pair detection beats plain single-token matches.
+        assert_eq!(
+            domain_from_title("Open Google Drive"),
+            Some("drive.google.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_browser_title_rejects_local_resources() {
+        // A stray file:// tab must never be tracked as a website name.
+        assert_eq!(
+            domain_from_browser_title("file:///mnt/01DC492C8F8307B0/Github/chronos-minimal - Chromium"),
+            None
+        );
+        assert_eq!(
+            domain_from_browser_title("file%3A//mnt/chronos-minimal%20docs - Chromium"),
+            None
+        );
+        // Raw scheme URLs that fail domain normalization are not websites either.
+        assert_eq!(
+            domain_from_browser_title("file:///home/batman/notes.md - Mozilla Firefox"),
+            None
+        );
+        // Filename-style labels must not be tracked as websites either.
+        assert_eq!(domain_from_browser_title("rockyou.txt - Chromium"), None);
+        assert_eq!(domain_from_browser_title("tar.gz — Chromium"), None);
+        assert_eq!(
+            domain_from_browser_title("frappe.utils.print_format.download_pdf - Chromium"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_browser_title_strict_domain_only() {
+        // Known sites/brands resolve to domains
+        assert_eq!(
+            domain_from_browser_title("Google Search - Google Chrome"),
+            Some("google.com".to_string())
+        );
+        assert_eq!(
+            domain_from_browser_title("Gemini - Google Chrome"),
+            Some("gemini.google.com".to_string())
+        );
+        assert_eq!(
+            domain_from_browser_title("How to write Rust - blog.rust-lang.org - Firefox"),
+            Some("blog.rust-lang.org".to_string())
+        );
+
+        assert_eq!(
+            domain_from_browser_title("http://192.168.1.100:8123/dashboard-home/0 - Chromium"),
+            Some("192.168.1.100".to_string())
+        );
+
+        // Arbitrary unknown page titles without domain or known brand fallback to clean page title
+        let long_title = "This is a very long unknown page title with lots of words - Chromium";
+        assert_eq!(
+            domain_from_browser_title(long_title),
+            Some("This is a very long unknown page title with lots of words".to_string())
+        );
+
+        let unknown_tab = "  My   Dashboard   - Brave ";
+        assert_eq!(
+            domain_from_browser_title(unknown_tab),
+            Some("My   Dashboard".to_string())
+        );
     }
 
     #[test]
