@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Chronos Screentime Sync",
+  "version": "1.0.0",
+  "description": "Companion extension for Chronos Screentime to accurately track active website domains and URLs.",
+  "permissions": [
+    "tabs"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:45678/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Chronos Screentime Sync",
+    "default_popup": "popup.html"
+  },
+  "icons": {
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}

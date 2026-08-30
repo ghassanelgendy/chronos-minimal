@@ -29,8 +29,12 @@ Chronos Minimal is a lightweight background screen time tracker for **Linux** an
   - **Windows:** Native Win32 foreground polling and taskbar notification tray.
 - **Smart Website & Web App Detection:**
   - Extracts domains for web applications (Gemini, ChatGPT, Claude, Perplexity, DeepSeek, YouTube, GitHub, Google Meet, Drive, Docs, Notion, Linear, Reddit, and 70+ others) without double-counting parent browser time.
-  - Development URL support (including `localhost:3000`, `127.0.0.1:8080`).
+  - Development URL support (including `localhost:3000`, `127.0.0.1:8080`, custom local ports and IPs).
   - Distinguishes actual websites from internal browser pages (`New Tab`, `Settings`).
+- **🌐 Chronos Browser Extension (Optional - 100% Exact URL Tracking):**
+  - Companion extension for Chrome, Chromium, Brave, Edge, and Firefox.
+  - Directly reports active tab URLs and domains to Chronos without guessing from window titles.
+  - Zero overhead: lightweight background service worker that only fires on tab changes.
 - **Interactive UI & Calendar Navigation:**
   - **Sunday-First 7-Day Navigation Strip:** View daily tracked time at a glance (`Sun`..`Sat`).
   - **Date Navigator:** Quick jump controls (`◀ Prev Day`, `Today`, `Next Day ▶`, `« Prev Week`, `Next Week »`).
@@ -76,6 +80,15 @@ To run Chronos in the background / AppIndicator tray on startup:
 
 1. Download `chronos-screentime-windows-x86_64.zip` from the [Releases](https://github.com/ghassanelgendy/chronos-minimal/releases).
 2. Extract and run `chronos-screentime.exe`.
+
+### 🌐 Browser Extension Setup (Chrome / Brave / Edge / Chromium)
+
+To get 100% exact URL and domain tracking directly from your browser:
+1. Open `chrome://extensions` (or `edge://extensions` / `brave://extensions`).
+2. Toggle on **Developer mode** in the top-right corner.
+3. Click **Load unpacked**.
+4. Select the `extension/` folder in this repository.
+5. The extension will automatically sync active tab URLs to Chronos in real time.
 
 ---
 

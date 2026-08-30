@@ -11,6 +11,7 @@ mod ui;
 mod startup;
 
 use crate::storage::{load_settings, load_screen_time_data, save_screen_time_data};
+use eframe::egui;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -163,6 +164,7 @@ struct LinuxTray {
     tracking_enabled: Arc<AtomicBool>,
     tracker_running: Arc<AtomicBool>,
     show_dashboard_flag: Arc<AtomicBool>,
+    egui_ctx: Arc<std::sync::OnceLock<egui::Context>>,
 }
 
 #[cfg(target_os = "linux")]
@@ -184,6 +186,9 @@ impl ksni::Tray for LinuxTray {
     }
     fn activate(&mut self, _x: i32, _y: i32) {
         self.show_dashboard_flag.store(true, Ordering::SeqCst);
+        if let Some(ctx) = self.egui_ctx.get() {
+            ctx.request_repaint();
+        }
     }
     fn icon_theme_path(&self) -> String {
         if let Some(base) = directories::BaseDirs::new() {
@@ -242,6 +247,9 @@ impl ksni::Tray for LinuxTray {
                 label: "Open Dashboard".to_string(),
                 activate: Box::new(|this: &mut Self| {
                     this.show_dashboard_flag.store(true, Ordering::SeqCst);
+                    if let Some(ctx) = this.egui_ctx.get() {
+                        ctx.request_repaint();
+                    }
                 }),
                 ..Default::default()
             }
@@ -269,6 +277,7 @@ impl ksni::Tray for LinuxTray {
     }
 }
 
+
 #[cfg(target_os = "linux")]
 fn init_linux_tray(
     data: Arc<std::sync::Mutex<crate::models::ScreenTimeData>>,
@@ -276,6 +285,7 @@ fn init_linux_tray(
     tracking_enabled: Arc<AtomicBool>,
     tracker_running: Arc<AtomicBool>,
     show_dashboard_flag: Arc<AtomicBool>,
+    egui_ctx: Arc<std::sync::OnceLock<egui::Context>>,
 ) {
     use ksni::TrayMethods;
     let tray = LinuxTray {
@@ -284,6 +294,7 @@ fn init_linux_tray(
         tracking_enabled,
         tracker_running,
         show_dashboard_flag,
+        egui_ctx,
     };
     std::thread::spawn(move || {
         if let Ok(rt) = tokio::runtime::Runtime::new() {
@@ -306,6 +317,10 @@ fn main() {
     #[cfg(not(windows))]
     {
         std::env::set_var("WINIT_UNIX_BACKEND", "x11");
+        // winit 0.29 does not honor WINIT_UNIX_BACKEND; it only selects a backend from
+        // the forced_backend builder flag or the presence of WAYLAND_DISPLAY. Hide Wayland
+        // so winit falls through to X11 (XWayland), where hide-to-tray (unmap/remap) works.
+        std::env::remove_var("WAYLAND_DISPLAY");
     }
 
     STARTUP_TIME.set(chrono::Local::now()).ok();
@@ -355,7 +370,10 @@ fn main() {
     let tracker_running = Arc::new(AtomicBool::new(true));
 
     #[cfg(not(windows))]
-    crate::startup::ensure_icon_installed();
+    // Icon install can decode/resize the PNG and run gtk-update-icon-cache, which blocks for
+    // seconds over a large icon theme dir. Do it on a background thread so the window appears
+    // immediately; the tray embeds the icon bytes directly and doesn't depend on this.
+    std::thread::spawn(crate::startup::ensure_icon_installed);
 
     // Ensure autostart entry matches saved preference.
     {
@@ -379,6 +397,43 @@ fn main() {
             tracking_enabled_tracker,
             running_tracker,
         );
+    });
+
+    // Browser extension receiver: local HTTP listener on 127.0.0.1:45678
+    std::thread::spawn(|| {
+        let listener = match std::net::TcpListener::bind("127.0.0.1:45678") {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("[chronos] extension listener port 45678 bind failed: {}", e);
+                return;
+            }
+        };
+        use std::io::{Read, Write};
+        for stream in listener.incoming() {
+            if let Ok(mut s) = stream {
+                let mut buf = [0u8; 4096];
+                if let Ok(n) = s.read(&mut buf) {
+                    if n > 0 {
+                        let req = String::from_utf8_lossy(&buf[..n]);
+                        // Handle CORS preflight / active tab post
+                        if req.starts_with("OPTIONS") {
+                            let resp = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nContent-Length: 0\r\n\r\n";
+                            let _ = s.write_all(resp.as_bytes());
+                        } else if req.starts_with("POST") {
+                            if let Some(body) = req.split("\r\n\r\n").nth(1) {
+                                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(body.trim()) {
+                                    if let Some(url) = parsed.get("url").and_then(|u| u.as_str()) {
+                                        crate::tracker::update_browser_tab(url);
+                                    }
+                                }
+                            }
+                            let resp = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: 15\r\n\r\n{\"status\":\"ok\"}";
+                            let _ = s.write_all(resp.as_bytes());
+                        }
+                    }
+                }
+            }
+        }
     });
 
     // Upload thread: every N minutes, if sync enabled, upload to Supabase
@@ -429,6 +484,7 @@ fn main() {
 
     let show_dashboard_flag = Arc::new(AtomicBool::new(false));
     let select_tab_index = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let egui_ctx: Arc<std::sync::OnceLock<egui::Context>> = Arc::new(std::sync::OnceLock::new());
 
     #[cfg(windows)]
     let _tray = init_tray(
@@ -446,6 +502,7 @@ fn main() {
         Arc::clone(&tracking_enabled),
         Arc::clone(&tracker_running),
         Arc::clone(&show_dashboard_flag),
+        Arc::clone(&egui_ctx),
     );
 
     let start_minimized = args.contains(&"--minimized".to_string())
@@ -461,5 +518,6 @@ fn main() {
         Arc::clone(&show_dashboard_flag),
         Some(tab_to_select),
         start_minimized,
+        egui_ctx,
     );
 }
